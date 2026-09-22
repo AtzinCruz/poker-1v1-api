@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Póker Five-Card Draw 1 vs. 1</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <h1>🃏 Five-Card Draw <span class="muted">1 vs. 1</span></h1>
+    <div id="session-info" class="session-info hidden">
+      <span id="player-name"></span>
+      <span class="wallet">
+        Saldo: <strong id="wallet-available">–</strong>
+        <span class="muted">(bloqueado: <span id="wallet-blocked">0</span>)</span>
+      </span>
+      <button id="btn-logout" class="btn btn-ghost">Salir</button>
+    </div>
+  </header>
+
+  <main id="app">
+    <!-- Pantalla de login -->
+    <section id="screen-auth" class="screen">
+      <div class="card-panel narrow">
+        <h2>Entrar</h2>
+        <p class="muted">
+          Esto es un stub de identidad para desarrollo: escribe cualquier nombre y se crea (o
+          recupera) tu jugador.
+        </p>
+        <form id="form-login">
+          <label>
+            Tu nombre
+            <input id="input-display-name" type="text" maxlength="40" required placeholder="alice" />
+          </label>
+          <button type="submit" class="btn btn-primary">Entrar</button>
+        </form>
+        <p id="auth-error" class="error hidden"></p>
+      </div>
+    </section>
+
+    <!-- Lobby -->
+    <section id="screen-lobby" class="screen hidden">
+      <div class="lobby-grid">
+        <div class="card-panel">
+          <h2>Tu ID de jugador</h2>
+          <p class="muted">Compártelo con tu rival para que pueda invitarte a una partida.</p>
+          <div class="copy-row">
+            <input id="my-player-id" type="text" readonly />
+            <button id="btn-copy-id" class="btn btn-ghost" type="button">Copiar</button>
+          </div>
+        </div>
+
+        <div class="card-panel">
+          <h2>Crear partida</h2>
+          <form id="form-create-match">
+            <label>
+              ID del jugador invitado
+              <input id="input-invitee-id" type="text" required placeholder="pega aquí el ID de tu rival" />
+            </label>
+            <div class="field-row">
+              <label>
+                Fichas iniciales
+                <input id="input-starting-stack" type="number" min="100" max="100000" value="1000" required />
+              </label>
+              <label>
+                Ciega chica
+                <input id="input-small-blind" type="number" min="1" value="10" required />
+              </label>
+              <label>
+                Ciega grande
+                <input id="input-big-blind" type="number" min="2" value="20" required />
+              </label>
+            </div>
+            <label>
+              Segundos por turno
+              <input id="input-turn-timeout" type="number" min="15" max="120" value="60" required />
+            </label>
+            <button type="submit" class="btn btn-primary">Crear partida</button>
+          </form>
+          <p id="create-error" class="error hidden"></p>
+        </div>
+
+        <div class="card-panel">
+          <h2>Unirme a una partida</h2>
+          <form id="form-join-match">
+            <label>
+              ID de la partida
+              <input id="input-join-match-id" type="text" required />
+            </label>
+            <label>
+              Token de invitación
+              <input id="input-join-token" type="text" required />
+            </label>
+            <button type="submit" class="btn btn-primary">Unirme</button>
+          </form>
+          <p id="join-error" class="error hidden"></p>
+        </div>
+
+        <div class="card-panel" id="waiting-room-panel" hidden>
+          <h2>Esperando al rival…</h2>
+          <p>Comparte estos datos con tu invitado:</p>
+          <div class="copy-row">
+            <span class="muted">Partida:</span>
+            <input id="waiting-match-id" type="text" readonly />
+          </div>
+          <div class="copy-row">
+            <span class="muted">Token:</span>
+            <input id="waiting-join-token" type="text" readonly />
+          </div>
+        </div>
+
+        <div class="card-panel">
+          <h2>Reanudar partida</h2>
+          <form id="form-resume-match">
+            <label>
+              ID de la partida
+              <input id="input-resume-match-id" type="text" required />
+            </label>
+            <button type="submit" class="btn btn-secondary">Ir a la mesa</button>
+          </form>
+        </div>
+      </div>
+    </section>
+
+    <!-- Mesa de juego -->
+    <section id="screen-table" class="screen hidden">
+      <div class="table-topbar">
+        <button id="btn-back-lobby" class="btn btn-ghost">← Lobby</button>
+        <div id="match-status-line" class="muted"></div>
+        <button id="btn-resign" class="btn btn-danger">Abandonar</button>
+      </div>
+
+      <div id="hand-result-banner" class="banner hidden"></div>
+
+      <div class="table-felt">
+        <div class="player-panel" id="opponent-panel">
+          <div class="player-header">
+            <span class="player-tag">Rival</span>
+            <span id="opponent-id" class="muted small"></span>
+          </div>
+          <div class="cards" id="opponent-cards"></div>
+          <div class="stats">
+            <span>Stack: <strong id="opponent-stack">–</strong></span>
+            <span>Aportó: <strong id="opponent-contribution">–</strong></span>
+          </div>
+        </div>
+
+        <div class="pot-area">
+          <div class="pot">Pozo: <strong id="pot-amount">0</strong></div>
+          <div id="turn-indicator" class="turn-indicator"></div>
+        </div>
+
+        <div class="player-panel" id="you-panel">
+          <div class="player-header">
+            <span class="player-tag">Vos</span>
+            <span id="you-id" class="muted small"></span>
+          </div>
+          <div class="cards" id="you-cards"></div>
+          <div class="stats">
+            <span>Stack: <strong id="you-stack">–</strong></span>
+            <span>Aportaste: <strong id="you-contribution">–</strong></span>
+          </div>
+        </div>
+      </div>
+
+      <div id="action-panel" class="action-panel"></div>
+      <p id="action-error" class="error hidden"></p>
+    </section>
+  </main>
+
+  <script type="module" src="/app.js"></script>
+</body>
+</html>

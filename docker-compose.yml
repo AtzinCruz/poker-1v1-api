@@ -1,0 +1,23 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: poker-1v1-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: poker
+      POSTGRES_PASSWORD: poker
+      POSTGRES_DB: poker
+      POSTGRES_MULTIPLE_DATABASES: poker,poker_test
+    ports:
+      - "5433:5432"
+    volumes:
+      - poker_pg_data:/var/lib/postgresql/data
+      - ./docker/init-multi-db.sh:/docker-entrypoint-initdb.d/init-multi-db.sh
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U poker"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  poker_pg_data:

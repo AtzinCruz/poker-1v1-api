@@ -1,0 +1,195 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum MatchStatus {
+  WAITING_FOR_OPPONENT
+  IN_PROGRESS
+  MATCH_FINISHED
+  CANCELLED
+}
+
+enum HandPhase {
+  HAND_SETUP
+  BETTING_PRE_DRAW
+  DRAW
+  BETTING_POST_DRAW
+  SHOWDOWN
+  HAND_FINISHED
+}
+
+enum ActionType {
+  DRAW
+  BET
+  ALL_IN
+  FOLD
+}
+
+enum FinishReason {
+  RESIGN
+  INSUFFICIENT_STACK
+  DISCONNECT_TIMEOUT
+}
+
+model Player {
+  id              String   @id @default(cuid())
+  displayName     String   @unique
+  fictionalBalance Int     @default(1000)
+  blockedBalance  Int      @default(0)
+  createdAt       DateTime @default(now())
+
+  matchesAsPlayer1 Match[] @relation("MatchPlayer1")
+  matchesAsPlayer2 Match[] @relation("MatchPlayer2")
+  actions          Action[]
+  idempotencyRecords IdempotencyRecord[]
+}
+
+model Match {
+  id                 String      @id @default(cuid())
+  status             MatchStatus @default(WAITING_FOR_OPPONENT)
+  startingStack      Int
+  smallBlind         Int
+  bigBlind           Int
+  turnTimeoutSeconds Int         @default(60)
+  maxDiscard         Int         @default(5)
+
+  player1Id String
+  player1   Player @relation("MatchPlayer1", fields: [player1Id], references: [id])
+  player2Id String?
+  player2   Player? @relation("MatchPlayer2", fields: [player2Id], references: [id])
+  // Jugador invitado al crear la partida (sección 6.1: "no se permite partida pública en v1").
+  inviteeId String
+
+  dealerPlayerId String?
+  handNumber     Int    @default(0)
+  stateVersion   Int    @default(1)
+  joinToken      String @unique
+
+  // Fichas que cada jugador tiene disponibles para apostar (fuera del pozo de la mano en curso).
+  player1Stack Int?
+  player2Stack Int?
+
+  finishReason FinishReason?
+  winnerId     String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  hands  Hand[]
+  events GameEvent[]
+
+  @@index([player1Id])
+  @@index([player2Id])
+}
+
+model Hand {
+  id     String    @id @default(cuid())
+  matchId String
+  match   Match     @relation(fields: [matchId], references: [id])
+  number  Int
+  phase   HandPhase @default(HAND_SETUP)
+
+  dealerPlayerId String
+
+  deckCommitment String
+  deckSeed       String
+  deckSeedRevealedAt DateTime?
+  // Próxima posición sin repartir del mazo barajado (las primeras 10 ya fueron a las manos iniciales).
+  deckCursor     Int @default(10)
+
+  // Derivado de player1Contribution + player2Contribution; se guarda para no recalcular en cada lectura.
+  pot           Int @default(0)
+  currentBet    Int @default(0)
+  lastFullRaise Int @default(0)
+
+  player1Cards Json
+  player2Cards Json
+
+  // Acumulado de toda la mano (no se resetea entre rondas).
+  player1Contribution Int @default(0)
+  player2Contribution Int @default(0)
+  // Snapshot del acumulado al iniciar la ronda de apuestas actual, para saber cuánto aportó cada quien SOLO en esta ronda.
+  player1RoundStartContribution Int @default(0)
+  player2RoundStartContribution Int @default(0)
+
+  player1Discarded    Boolean @default(false)
+  player2Discarded    Boolean @default(false)
+  player1Folded       Boolean @default(false)
+  player2Folded       Boolean @default(false)
+  player1AllIn        Boolean @default(false)
+  player2AllIn        Boolean @default(false)
+  player1ActedInRound Boolean @default(false)
+  player2ActedInRound Boolean @default(false)
+
+  toActPlayerId String?
+  turnExpiresAt DateTime?
+
+  // winnerId es null cuando winReason = SPLIT (empate total, se reparte el pozo).
+  winnerId       String?
+  winReason      String?
+  payoutPlayer1  Int?
+  payoutPlayer2  Int?
+  revealedCards  Json?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  actions Action[]
+  events  GameEvent[]
+
+  @@unique([matchId, number])
+}
+
+model Action {
+  id               String     @id @default(cuid())
+  handId           String
+  hand             Hand       @relation(fields: [handId], references: [id])
+  matchId          String
+  playerId         String
+  player           Player     @relation(fields: [playerId], references: [id])
+  type             ActionType
+  amount           Int?
+  discardedIndexes Int[]      @default([])
+  actionVersion    Int
+  isAuto           Boolean    @default(false)
+  idempotencyKey   String?
+  createdAt        DateTime   @default(now())
+
+  @@index([handId])
+  @@index([matchId])
+}
+
+model GameEvent {
+  id                  String   @id @default(cuid())
+  matchId             String
+  match               Match    @relation(fields: [matchId], references: [id])
+  handId              String?
+  hand                Hand?    @relation(fields: [handId], references: [id])
+  type                String
+  stateVersion        Int
+  occurredAt          DateTime @default(now())
+  publicPayload       Json
+  player1Payload      Json?
+  player2Payload      Json?
+
+  @@index([matchId])
+  @@index([handId])
+}
+
+model IdempotencyRecord {
+  id             String   @id @default(cuid())
+  playerId       String
+  player         Player   @relation(fields: [playerId], references: [id])
+  key            String
+  requestHash    String
+  responseStatus Int
+  responseBody   Json
+  createdAt      DateTime @default(now())
+
+  @@unique([playerId, key])
+}

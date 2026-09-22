@@ -1,0 +1,2 @@
+-- AlterTable
+ALTER TABLE "Hand" ADD COLUMN     "deckCursor" INTEGER NOT NULL DEFAULT 10;
