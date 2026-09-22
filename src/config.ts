@@ -21,4 +21,7 @@ export const config = {
   port: Number(process.env.PORT ?? 3000),
   databaseUrl: required("DATABASE_URL"),
   jwtSecret: required("JWT_SECRET"),
+  // Clave para entrar al panel de administración (POST /v1/auth/admin-session). Si no está
+  // configurada, ese endpoint queda deshabilitado (nadie puede entrar como admin).
+  adminSecret: process.env.ADMIN_SECRET || null,
 };

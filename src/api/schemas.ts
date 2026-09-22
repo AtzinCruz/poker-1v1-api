@@ -4,6 +4,15 @@ export const devSessionSchema = z.object({
   displayName: z.string().trim().min(1).max(40),
 });
 
+export const adminSessionSchema = z.object({
+  displayName: z.string().trim().min(1).max(40),
+  secret: z.string().min(1),
+});
+
+export const addBalanceSchema = z.object({
+  amount: z.number().int().positive().max(1_000_000),
+});
+
 export const createMatchSchema = z.object({
   startingStack: z.number().int().min(100).max(100_000),
   smallBlind: z.number().int().positive(),

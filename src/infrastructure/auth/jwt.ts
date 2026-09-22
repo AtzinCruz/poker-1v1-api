@@ -17,3 +17,21 @@ export function signPlayerToken(payload: AuthTokenPayload): string {
 export function verifyPlayerToken(token: string): AuthTokenPayload {
   return jwt.verify(token, config.jwtSecret) as AuthTokenPayload;
 }
+
+export interface AdminTokenPayload {
+  admin: true;
+  name: string;
+}
+
+/** Token de administrador: solo se emite si el caller conoce ADMIN_SECRET (ver authService.ts). */
+export function signAdminToken(name: string): string {
+  return jwt.sign({ admin: true, name } satisfies AdminTokenPayload, config.jwtSecret, { expiresIn: "4h" });
+}
+
+export function verifyAdminToken(token: string): AdminTokenPayload {
+  const payload = jwt.verify(token, config.jwtSecret) as Partial<AdminTokenPayload>;
+  if (payload.admin !== true) {
+    throw new Error("No es un token de administrador");
+  }
+  return payload as AdminTokenPayload;
+}

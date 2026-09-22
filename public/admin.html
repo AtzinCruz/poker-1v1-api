@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Admin — Póker 1 vs. 1</title>
+  <link rel="stylesheet" href="/styles.css" />
+  <link rel="stylesheet" href="/admin.css" />
+</head>
+<body>
+  <header class="topbar">
+    <h1>🛠️ Panel de administración</h1>
+    <div id="admin-session-info" class="session-info hidden">
+      <span id="admin-name"></span>
+      <button id="btn-admin-logout" class="btn btn-ghost">Salir</button>
+    </div>
+  </header>
+
+  <main id="admin-app">
+    <section id="screen-admin-login" class="screen">
+      <div class="card-panel narrow">
+        <h2>Entrar como administrador</h2>
+        <p class="muted">Requiere la clave de administrador configurada en el servidor (ADMIN_SECRET).</p>
+        <form id="form-admin-login">
+          <label>
+            Tu nombre
+            <input id="admin-input-name" type="text" value="admin" maxlength="40" required />
+          </label>
+          <label>
+            Clave de administrador
+            <input id="admin-input-secret" type="password" required />
+          </label>
+          <button type="submit" class="btn btn-primary">Entrar</button>
+        </form>
+        <p id="admin-login-error" class="error hidden"></p>
+      </div>
+    </section>
+
+    <section id="screen-admin-panel" class="screen hidden">
+      <div class="card-panel">
+        <div class="admin-section-header">
+          <h2>Jugadores</h2>
+          <button id="btn-refresh-players" class="btn btn-ghost" type="button">Actualizar</button>
+        </div>
+        <div class="table-wrap">
+          <table class="admin-table">
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>Nombre</th>
+                <th>Saldo disponible</th>
+                <th>Saldo bloqueado</th>
+                <th>Creado</th>
+                <th>Agregar saldo</th>
+              </tr>
+            </thead>
+            <tbody id="players-tbody"></tbody>
+          </table>
+        </div>
+        <p id="admin-players-error" class="error hidden"></p>
+      </div>
+
+      <div class="card-panel">
+        <div class="admin-section-header">
+          <h2>Partidas</h2>
+          <button id="btn-refresh-matches" class="btn btn-ghost" type="button">Actualizar</button>
+        </div>
+        <div class="table-wrap">
+          <table class="admin-table">
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>Estado</th>
+                <th>Jugador 1</th>
+                <th>Jugador 2</th>
+                <th>Stack / Ciegas</th>
+                <th>Mano #</th>
+                <th>Motivo fin</th>
+                <th>Ganador</th>
+                <th>Creada</th>
+              </tr>
+            </thead>
+            <tbody id="matches-tbody"></tbody>
+          </table>
+        </div>
+        <p id="admin-matches-error" class="error hidden"></p>
+      </div>
+    </section>
+  </main>
+
+  <script type="module" src="/admin.js"></script>
+</body>
+</html>

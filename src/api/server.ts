@@ -11,6 +11,7 @@ import { matchRoutes } from "./routes/matches.js";
 import { actionRoutes } from "./routes/actions.js";
 import { handRoutes } from "./routes/hands.js";
 import { walletRoutes } from "./routes/wallet.js";
+import { adminRoutes } from "./routes/admin.js";
 
 export async function buildServer(options: { logger?: boolean } = {}) {
   const app = Fastify({ logger: options.logger ?? true });
@@ -58,6 +59,7 @@ export async function buildServer(options: { logger?: boolean } = {}) {
   await app.register(actionRoutes);
   await app.register(handRoutes);
   await app.register(walletRoutes);
+  await app.register(adminRoutes);
 
   app.get("/health", async () => ({ status: "ok" }));
 
