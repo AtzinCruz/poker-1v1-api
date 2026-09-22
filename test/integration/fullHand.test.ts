@@ -179,6 +179,10 @@ describe("flujo completo de partida", () => {
     const audit = auditRes.json();
     expect(audit.deckSeed).not.toBeNull();
     expect(audit.actions.length).toBeGreaterThan(0);
+    // player1Id/player2Id permiten al cliente saber qué mano revelada es la suya en el showdown.
+    expect([audit.player1Id, audit.player2Id].sort()).toEqual([alice.id, bob.id].sort());
+    expect(audit.revealedCards).toHaveProperty("player1");
+    expect(audit.revealedCards).toHaveProperty("player2");
   });
 
   it("un fold entrega el pozo al rival sin showdown (caso de terminación)", async () => {

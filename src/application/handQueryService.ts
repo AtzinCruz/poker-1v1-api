@@ -149,6 +149,8 @@ export interface HandAudit {
   number: number;
   phase: Hand["phase"];
   dealerPlayerId: string;
+  player1Id: string;
+  player2Id: string;
   pot: number;
   contributions: { player1: number; player2: number };
   winnerId: string | null;
@@ -171,7 +173,7 @@ export async function getHandAudit(tx: Tx, matchId: string, handNumber: number, 
   await assertMatchMembership(tx, matchId, playerId);
   const hand = await tx.hand.findUnique({
     where: { matchId_number: { matchId, number: handNumber } },
-    include: { actions: { orderBy: { createdAt: "asc" } } },
+    include: { actions: { orderBy: { createdAt: "asc" } }, match: true },
   });
   if (!hand) {
     throw new DomainError("MATCH_NOT_FOUND", "No existe esa mano para esta partida");
@@ -184,6 +186,8 @@ export async function getHandAudit(tx: Tx, matchId: string, handNumber: number, 
     number: hand.number,
     phase: hand.phase,
     dealerPlayerId: hand.dealerPlayerId,
+    player1Id: hand.match.player1Id,
+    player2Id: hand.match.player2Id!,
     pot: hand.player1Contribution + hand.player2Contribution,
     contributions: { player1: hand.player1Contribution, player2: hand.player2Contribution },
     winnerId: hand.winnerId,

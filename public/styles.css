@@ -358,6 +358,37 @@ input:focus {
   box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
 }
 
+.modal-box.wide {
+  max-width: 560px;
+}
+
+.showdown-hands {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 20px;
+  justify-content: center;
+  margin: 16px 0;
+}
+
+.showdown-hand {
+  text-align: center;
+}
+
+.showdown-hand-label {
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--accent);
+  font-weight: 700;
+  margin-bottom: 8px;
+}
+
+.showdown-result {
+  text-align: center;
+  font-size: 1.05rem;
+  font-weight: 600;
+}
+
 .modal-box h3 {
   margin-top: 0;
 }

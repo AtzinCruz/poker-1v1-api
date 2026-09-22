@@ -169,6 +169,25 @@
     </section>
   </main>
 
+  <!-- Popup de resultado de mano: showdown con ambas manos reveladas -->
+  <div id="showdown-popup" class="modal-overlay hidden">
+    <div class="modal-box wide">
+      <h3 id="showdown-title">Resultado de la mano</h3>
+      <div class="showdown-hands">
+        <div class="showdown-hand">
+          <div class="showdown-hand-label">Vos</div>
+          <div id="showdown-you-cards" class="cards"></div>
+        </div>
+        <div class="showdown-hand">
+          <div class="showdown-hand-label">Rival</div>
+          <div id="showdown-opponent-cards" class="cards"></div>
+        </div>
+      </div>
+      <p id="showdown-result" class="showdown-result"></p>
+      <button id="btn-close-showdown" class="btn btn-primary" type="button">Continuar</button>
+    </div>
+  </div>
+
   <!-- Popup de invitaciones pendientes (aparece sobre cualquier pantalla mientras estás en el lobby) -->
   <div id="invitation-popup" class="modal-overlay hidden">
     <div class="modal-box">

@@ -20,6 +20,7 @@ let selectedDiscardIndexes = new Set();
 let invitationPollTimer = null;
 let dismissedInvitationIds = new Set();
 let invitationPopupVisible = false;
+let showdownAutoCloseTimer = null;
 
 // ---------- DOM ----------
 const el = (id) => document.getElementById(id);
@@ -162,6 +163,7 @@ function afterLogin() {
 /** Vuelve al lobby y retoma el chequeo de invitaciones pendientes. Reusado por varios botones. */
 function goToLobby() {
   stopPolling();
+  hideShowdownPopup();
   setCurrentMatch(null);
   showScreen("lobby");
   refreshWallet();
@@ -316,6 +318,7 @@ el("btn-resign").addEventListener("click", async () => {
 function enterTable(matchId) {
   stopInvitationPolling();
   hideInvitationPopup();
+  hideShowdownPopup();
   showScreen("table");
   selectedDiscardIndexes = new Set();
   el("hand-result-banner").classList.add("hidden");
@@ -342,7 +345,7 @@ async function pollOnce() {
     const previousHandNumber = lastView?.handNumber;
     const view = await api("GET", `/v1/matches/${currentMatchId}`);
     if (previousHandNumber && view.handNumber > previousHandNumber) {
-      showLastHandResult();
+      showLastHandResult(previousHandNumber);
     }
     lastView = view;
     renderTable(view);
@@ -359,23 +362,54 @@ async function pollOnce() {
   }
 }
 
-async function showLastHandResult() {
+async function showLastHandResult(handNumber) {
   try {
-    const hands = await api("GET", `/v1/matches/${currentMatchId}/hands`);
-    const last = hands[hands.length - 1];
-    if (!last) return;
+    const audit = await api("GET", `/v1/matches/${currentMatchId}/hands/${handNumber}`);
+    const youWon = audit.winnerId === session.player.id;
+    const reasonLabel = { FOLD: "por retiro", SHOWDOWN: "por showdown", SPLIT: "bote dividido" }[audit.winReason] || "";
+
+    if (audit.winReason === "SHOWDOWN" || audit.winReason === "SPLIT") {
+      showShowdownPopup(audit, handNumber, youWon, reasonLabel);
+      return;
+    }
+
+    // Fold: no hay showdown, no se revelan cartas (sección 2.3 del spec) — solo un aviso breve.
     const banner = el("hand-result-banner");
-    const youWon = last.winnerId === session.player.id;
-    const reasonLabel = { FOLD: "por retiro", SHOWDOWN: "por showdown", SPLIT: "bote dividido" }[last.winReason] || "";
-    banner.textContent = last.winReason === "SPLIT"
-      ? `Mano #${last.number}: bote dividido (${last.pot} fichas)`
-      : `Mano #${last.number}: ${youWon ? "ganaste" : "perdiste"} ${reasonLabel} (${last.pot} fichas)`;
+    banner.textContent = `Mano #${handNumber}: ${youWon ? "ganaste" : "perdiste"} ${reasonLabel} (${audit.pot} fichas)`;
     banner.classList.remove("hidden");
     setTimeout(() => banner.classList.add("hidden"), 4000);
   } catch {
     // no crítico
   }
 }
+
+function showShowdownPopup(audit, handNumber, youWon, reasonLabel) {
+  const youAreP1 = audit.player1Id === session.player.id;
+  const yourCards = youAreP1 ? audit.revealedCards?.player1 : audit.revealedCards?.player2;
+  const opponentCards = youAreP1 ? audit.revealedCards?.player2 : audit.revealedCards?.player1;
+
+  el("showdown-title").textContent = `Mano #${handNumber} — Showdown`;
+  el("showdown-you-cards").innerHTML = "";
+  el("showdown-opponent-cards").innerHTML = "";
+  (yourCards || []).forEach((code) => el("showdown-you-cards").appendChild(formatCard(code)));
+  (opponentCards || []).forEach((code) => el("showdown-opponent-cards").appendChild(formatCard(code)));
+
+  el("showdown-result").textContent =
+    audit.winReason === "SPLIT"
+      ? `Empate — bote dividido (${audit.pot} fichas)`
+      : `${youWon ? "¡Ganaste!" : "Perdiste"} ${reasonLabel} (${audit.pot} fichas)`;
+
+  el("showdown-popup").classList.remove("hidden");
+  clearTimeout(showdownAutoCloseTimer);
+  showdownAutoCloseTimer = setTimeout(hideShowdownPopup, 7000);
+}
+
+function hideShowdownPopup() {
+  el("showdown-popup").classList.add("hidden");
+  clearTimeout(showdownAutoCloseTimer);
+}
+
+el("btn-close-showdown").addEventListener("click", hideShowdownPopup);
 
 function renderTable(view) {
   const statusLabel = {
