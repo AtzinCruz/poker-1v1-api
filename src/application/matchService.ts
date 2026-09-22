@@ -242,3 +242,33 @@ export async function resignMatch(
     return { ...result };
   });
 }
+
+export interface Invitation {
+  matchId: string;
+  joinToken: string;
+  creatorId: string;
+  creatorDisplayName: string;
+  rules: { startingStack: number; smallBlind: number; bigBlind: number };
+  createdAt: string;
+}
+
+/**
+ * Partidas creadas para este jugador (inviteeId) que todavía esperan que se una.
+ * No hay WebSocket en esta entrega, así que el lobby hace polling sobre este endpoint
+ * para mostrar la invitación como un aviso en vez de requerir compartir el join token a mano.
+ */
+export async function listPendingInvitations(playerId: string): Promise<Invitation[]> {
+  const matches = await prisma.match.findMany({
+    where: { inviteeId: playerId, status: "WAITING_FOR_OPPONENT" },
+    include: { player1: true },
+    orderBy: { createdAt: "desc" },
+  });
+  return matches.map((m) => ({
+    matchId: m.id,
+    joinToken: m.joinToken,
+    creatorId: m.player1Id,
+    creatorDisplayName: m.player1.displayName,
+    rules: { startingStack: m.startingStack, smallBlind: m.smallBlind, bigBlind: m.bigBlind },
+    createdAt: m.createdAt.toISOString(),
+  }));
+}

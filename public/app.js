@@ -6,6 +6,7 @@ const SESSION_KEY = "poker_session_v1";
 const LAST_MATCH_KEY = "poker_last_match_v1";
 const POLL_INTERVAL_MS = 1500;
 const COUNTDOWN_TICK_MS = 250;
+const INVITATION_POLL_INTERVAL_MS = 3000;
 
 const RANK_LABEL = { 11: "J", 12: "Q", 13: "K", 14: "A" };
 const SUIT_SYMBOL = { S: "♠", H: "♥", D: "♦", C: "♣" };
@@ -16,6 +17,9 @@ let lastView = null;
 let pollTimer = null;
 let countdownTimer = null;
 let selectedDiscardIndexes = new Set();
+let invitationPollTimer = null;
+let dismissedInvitationIds = new Set();
+let invitationPopupVisible = false;
 
 // ---------- DOM ----------
 const el = (id) => document.getElementById(id);
@@ -69,7 +73,8 @@ class ApiError extends Error {
 }
 
 async function api(method, path, { body, idempotent = false } = {}) {
-  const headers = { "Content-Type": "application/json" };
+  const headers = {};
+  if (body !== undefined) headers["Content-Type"] = "application/json";
   if (session?.token) headers.Authorization = `Bearer ${session.token}`;
   if (idempotent) headers["Idempotency-Key"] = crypto.randomUUID();
 
@@ -134,6 +139,7 @@ el("form-login").addEventListener("submit", async (evt) => {
 
 el("btn-logout").addEventListener("click", () => {
   stopPolling();
+  stopInvitationPolling();
   saveSession(null);
   setCurrentMatch(null);
   el("session-info").classList.add("hidden");
@@ -149,7 +155,95 @@ function afterLogin() {
   if (currentMatchId) {
     enterTable(currentMatchId);
   } else {
-    showScreen("lobby");
+    goToLobby();
+  }
+}
+
+/** Vuelve al lobby y retoma el chequeo de invitaciones pendientes. Reusado por varios botones. */
+function goToLobby() {
+  stopPolling();
+  setCurrentMatch(null);
+  showScreen("lobby");
+  refreshWallet();
+  startInvitationPolling();
+}
+
+// ---------- Invitaciones pendientes ----------
+function startInvitationPolling() {
+  stopInvitationPolling();
+  pollInvitations();
+  invitationPollTimer = setInterval(pollInvitations, INVITATION_POLL_INTERVAL_MS);
+}
+
+function stopInvitationPolling() {
+  if (invitationPollTimer) clearInterval(invitationPollTimer);
+  invitationPollTimer = null;
+}
+
+async function pollInvitations() {
+  try {
+    const invitations = await api("GET", "/v1/invitations");
+    const pending = invitations.filter((inv) => !dismissedInvitationIds.has(inv.matchId));
+    if (pending.length > 0) {
+      renderInvitationPopup(pending);
+    } else if (invitationPopupVisible) {
+      hideInvitationPopup();
+    }
+  } catch {
+    // no bloquea el lobby si falla
+  }
+}
+
+function renderInvitationPopup(invitations) {
+  const list = el("invitation-list");
+  list.innerHTML = "";
+  for (const inv of invitations) {
+    const item = document.createElement("div");
+    item.className = "invitation-item";
+    const p = document.createElement("p");
+    p.textContent =
+      `${inv.creatorDisplayName} te invitó a jugar — ` +
+      `${inv.rules.startingStack} fichas, ciegas ${inv.rules.smallBlind}/${inv.rules.bigBlind}.`;
+    item.appendChild(p);
+
+    const actions = document.createElement("div");
+    actions.className = "invitation-actions";
+    actions.appendChild(
+      makeButton("Unirme", "btn-primary", () => acceptInvitation(inv)),
+    );
+    actions.appendChild(
+      makeButton("Ignorar", "btn-ghost", () => {
+        dismissedInvitationIds.add(inv.matchId);
+        pollInvitations();
+      }),
+    );
+    item.appendChild(actions);
+    list.appendChild(item);
+  }
+  el("invitation-popup").classList.remove("hidden");
+  invitationPopupVisible = true;
+}
+
+function hideInvitationPopup() {
+  el("invitation-popup").classList.add("hidden");
+  invitationPopupVisible = false;
+}
+
+el("btn-dismiss-invitations").addEventListener("click", hideInvitationPopup);
+
+async function acceptInvitation(inv) {
+  hideError("join-error");
+  try {
+    await api("POST", `/v1/matches/${inv.matchId}/join`, {
+      body: { joinToken: inv.joinToken },
+      idempotent: true,
+    });
+    hideInvitationPopup();
+    stopInvitationPolling();
+    setCurrentMatch(inv.matchId);
+    enterTable(inv.matchId);
+  } catch (err) {
+    showError("join-error", err.message);
   }
 }
 
@@ -207,12 +301,7 @@ el("form-resume-match").addEventListener("submit", (evt) => {
 });
 
 // ---------- Table ----------
-el("btn-back-lobby").addEventListener("click", () => {
-  stopPolling();
-  setCurrentMatch(null);
-  showScreen("lobby");
-  refreshWallet();
-});
+el("btn-back-lobby").addEventListener("click", goToLobby);
 
 el("btn-resign").addEventListener("click", async () => {
   if (!confirm("¿Seguro que quieres abandonar la partida? El rival gana el saldo en juego.")) return;
@@ -225,6 +314,8 @@ el("btn-resign").addEventListener("click", async () => {
 });
 
 function enterTable(matchId) {
+  stopInvitationPolling();
+  hideInvitationPopup();
   showScreen("table");
   selectedDiscardIndexes = new Set();
   el("hand-result-banner").classList.add("hidden");
@@ -328,6 +419,8 @@ function renderTable(view) {
   renderActionPanel(view, isYourTurn);
   renderCountdown();
 
+  el("btn-resign").classList.toggle("hidden", view.status !== "IN_PROGRESS" && view.status !== "WAITING_FOR_OPPONENT");
+
   if (view.status === "MATCH_FINISHED" || view.status === "CANCELLED") {
     stopPolling();
     const reasonLabel = { RESIGN: "abandono", INSUFFICIENT_STACK: "saldo insuficiente del rival" }[view.finishReason] || view.finishReason || "";
@@ -339,6 +432,11 @@ function renderTable(view) {
       ? `Partida terminada (${reasonLabel}). ${won ? "¡Ganaste! 🎉" : "Perdiste esta partida."}`
       : "Partida cancelada.";
     el("action-panel").appendChild(p);
+
+    const actionsRow = document.createElement("div");
+    actionsRow.className = "finished-actions";
+    actionsRow.appendChild(makeButton("Nueva partida", "btn-primary", goToLobby));
+    el("action-panel").appendChild(actionsRow);
   }
 }
 

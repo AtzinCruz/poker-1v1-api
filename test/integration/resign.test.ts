@@ -155,4 +155,25 @@ describe("abandonar partida (resign)", () => {
     expect(res.statusCode).toBe(403);
     expect(res.json().code).toBe("NOT_MATCH_PLAYER");
   });
+
+  it("resign sin body pero con Content-Type: application/json (como manda el navegador) no revienta en 500 (regresión)", async () => {
+    const alice = await registerPlayer(app, "alice-resign-emptyjson");
+    const bob = await registerPlayer(app, "bob-resign-emptyjson");
+    const createRes = await app.inject({
+      method: "POST",
+      url: "/v1/matches",
+      headers: authHeaders(alice),
+      payload: { startingStack: 1000, smallBlind: 10, bigBlind: 20, inviteeId: bob.id },
+    });
+    const match = createRes.json();
+
+    // Fastify rechaza un body vacío con Content-Type: application/json (FST_ERR_CTP_EMPTY_JSON_BODY);
+    // el manejador de errores debe devolver ese 4xx tal cual, no enmascararlo como 500.
+    const res = await app.inject({
+      method: "POST",
+      url: `/v1/matches/${match.id}/resign`,
+      headers: { ...authHeaders(alice), "content-type": "application/json" },
+    });
+    expect(res.statusCode).toBeLessThan(500);
+  });
 });

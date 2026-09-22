@@ -2,10 +2,16 @@ import type { FastifyInstance } from "fastify";
 import { requireAuthenticatedPlayer } from "../auth.js";
 import { requireIdempotencyKey } from "../idempotencyHeader.js";
 import { createMatchSchema, joinMatchSchema } from "../schemas.js";
-import { createMatch, joinMatch, resignMatch } from "../../application/matchService.js";
+import { createMatch, joinMatch, resignMatch, listPendingInvitations } from "../../application/matchService.js";
 import { getMatchViewForPlayer } from "../../application/handQueryService.js";
 
 export async function matchRoutes(app: FastifyInstance): Promise<void> {
+  app.get("/v1/invitations", async (request, reply) => {
+    const playerId = requireAuthenticatedPlayer(request);
+    const invitations = await listPendingInvitations(playerId);
+    return reply.code(200).send(invitations);
+  });
+
   app.post("/v1/matches", async (request, reply) => {
     const playerId = requireAuthenticatedPlayer(request);
     const idempotencyKey = requireIdempotencyKey(request);

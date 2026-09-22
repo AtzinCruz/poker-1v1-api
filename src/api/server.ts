@@ -40,6 +40,15 @@ export async function buildServer(options: { logger?: boolean } = {}) {
         .send({ ...toProblemJson("RATE_LIMITED", "Demasiadas solicitudes"), retryAfterMs: (error as { retryAfterMs?: number }).retryAfterMs });
       return;
     }
+    // Errores propios de Fastify (JSON malformado, Content-Type sin body, límites de payload, etc.):
+    // son errores del cliente (4xx), no del servidor — no deben caer en el 500 genérico de abajo.
+    if (typeof error.statusCode === "number" && error.statusCode >= 400 && error.statusCode < 500) {
+      reply
+        .code(error.statusCode)
+        .type("application/problem+json")
+        .send(toProblemJson("INVALID_ACTION", error.message));
+      return;
+    }
     request.log.error(error);
     reply.code(500).type("application/problem+json").send(toProblemJson("INVALID_ACTION", "Error interno del servidor"));
   });
