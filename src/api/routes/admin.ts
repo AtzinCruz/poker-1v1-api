@@ -17,10 +17,10 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
   });
 
   app.post("/v1/admin/players/:playerId/add-balance", async (request, reply) => {
-    requireAdmin(request);
+    const adminName = requireAdmin(request);
     const { playerId } = request.params as { playerId: string };
     const body = addBalanceSchema.parse(request.body);
-    const player = await addPlayerBalance(playerId, body.amount);
+    const player = await addPlayerBalance(playerId, body.amount, adminName);
     return reply.code(200).send(player);
   });
 }

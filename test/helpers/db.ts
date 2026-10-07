@@ -1,6 +1,7 @@
 import { prisma } from "../../src/infrastructure/prisma/client.js";
 
 export async function resetDatabase(): Promise<void> {
+  await prisma.adminAction.deleteMany();
   await prisma.gameEvent.deleteMany();
   await prisma.action.deleteMany();
   await prisma.idempotencyRecord.deleteMany();

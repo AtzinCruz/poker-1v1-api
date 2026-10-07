@@ -89,9 +89,23 @@ async function api(method, path, { body, idempotent = false } = {}) {
   const parsed = text ? JSON.parse(text) : null;
 
   if (!res.ok) {
+    if (res.status === 401 && session?.token && path !== "/v1/auth/dev-session") {
+      expireSession();
+    }
     throw new ApiError(res.status, parsed);
   }
   return parsed;
+}
+
+/** El token ya no sirve (vencido o revocado): limpiar la sesión y volver al login. */
+function expireSession() {
+  stopPolling();
+  stopInvitationPolling();
+  saveSession(null);
+  setCurrentMatch(null);
+  el("session-info").classList.add("hidden");
+  showScreen("auth");
+  showError("auth-error", "Tu sesión venció, entrá de nuevo.");
 }
 
 // ---------- Render helpers ----------
@@ -366,7 +380,7 @@ async function showLastHandResult(handNumber) {
   try {
     const audit = await api("GET", `/v1/matches/${currentMatchId}/hands/${handNumber}`);
     const youWon = audit.winnerId === session.player.id;
-    const reasonLabel = { FOLD: "por retiro", SHOWDOWN: "por showdown", SPLIT: "bote dividido" }[audit.winReason] || "";
+    const reasonLabel = { FOLD: "por retiro", FORFEIT: "por abandono", SHOWDOWN: "por showdown", SPLIT: "bote dividido" }[audit.winReason] || "";
 
     if (audit.winReason === "SHOWDOWN" || audit.winReason === "SPLIT") {
       showShowdownPopup(audit, handNumber, youWon, reasonLabel);
@@ -457,7 +471,7 @@ function renderTable(view) {
 
   if (view.status === "MATCH_FINISHED" || view.status === "CANCELLED") {
     stopPolling();
-    const reasonLabel = { RESIGN: "abandono", INSUFFICIENT_STACK: "saldo insuficiente del rival" }[view.finishReason] || view.finishReason || "";
+    const reasonLabel = { RESIGN: "abandono", DISCONNECT_TIMEOUT: "desconexión por inactividad", INSUFFICIENT_STACK: "saldo insuficiente de un jugador" }[view.finishReason] || view.finishReason || "";
     const won = view.winnerId === session.player.id;
     el("action-panel").innerHTML = "";
     const p = document.createElement("p");

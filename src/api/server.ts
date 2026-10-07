@@ -14,10 +14,11 @@ import { walletRoutes } from "./routes/wallet.js";
 import { adminRoutes } from "./routes/admin.js";
 
 export async function buildServer(options: { logger?: boolean } = {}) {
-  const app = Fastify({ logger: options.logger ?? true });
+  // trustProxy: detrás del proxy de Railway, sin esto todos los usuarios compartirían el límite de una sola IP.
+  const app = Fastify({ logger: options.logger ?? true, trustProxy: true });
 
   await app.register(rateLimit, {
-    max: 120,
+    max: 300,
     timeWindow: "1 minute",
   });
 

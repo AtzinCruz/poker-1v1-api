@@ -1,14 +1,22 @@
+import { createHash, timingSafeEqual } from "node:crypto";
 import { prisma } from "../infrastructure/prisma/client.js";
 import { signAdminToken } from "../infrastructure/auth/jwt.js";
 import { config } from "../config.js";
 import { DomainError } from "../domain/errors.js";
+
+/** Comparación en tiempo constante (sobre digests, para no filtrar la longitud de la clave). */
+function safeEqual(a: string, b: string): boolean {
+  const da = createHash("sha256").update(a).digest();
+  const db = createHash("sha256").update(b).digest();
+  return timingSafeEqual(da, db);
+}
 
 /** Login de administrador: requiere conocer ADMIN_SECRET (variable de entorno del servidor). */
 export function createAdminSession(name: string, secret: string): { token: string; name: string } {
   if (!config.adminSecret) {
     throw new DomainError("UNAUTHENTICATED", "El panel de administración no está habilitado en este servidor");
   }
-  if (secret !== config.adminSecret) {
+  if (!safeEqual(secret, config.adminSecret)) {
     throw new DomainError("UNAUTHENTICATED", "Clave de administrador incorrecta");
   }
   return { token: signAdminToken(name), name };
@@ -71,24 +79,44 @@ export async function listAllMatches(): Promise<AdminMatchRow[]> {
   }));
 }
 
-/** Acredita `amount` fichas ficticias al saldo disponible de un jugador. Solo para el panel de admin. */
-export async function addPlayerBalance(playerId: string, amount: number): Promise<AdminPlayerRow> {
+/** Tope para no desbordar la columna Int (32 bits) de Postgres con ajustes repetidos. */
+export const MAX_FICTIONAL_BALANCE = 2_000_000_000;
+
+/** Acredita `amount` fichas ficticias al saldo disponible de un jugador y deja registro de auditoría. */
+export async function addPlayerBalance(playerId: string, amount: number, adminName: string): Promise<AdminPlayerRow> {
   if (!Number.isInteger(amount) || amount <= 0) {
     throw new DomainError("INVALID_ACTION", "El monto a agregar debe ser un entero positivo");
   }
-  const player = await prisma.player.findUnique({ where: { id: playerId } });
-  if (!player) {
-    throw new DomainError("INVALID_ACTION", "El jugador no existe");
-  }
-  const updated = await prisma.player.update({
-    where: { id: playerId },
-    data: { fictionalBalance: player.fictionalBalance + amount },
+  return prisma.$transaction(async (tx) => {
+    await tx.$queryRaw`SELECT id FROM "Player" WHERE id = ${playerId} FOR UPDATE`;
+    const player = await tx.player.findUnique({ where: { id: playerId } });
+    if (!player) {
+      throw new DomainError("INVALID_ACTION", "El jugador no existe");
+    }
+    const balanceAfter = player.fictionalBalance + amount;
+    if (balanceAfter > MAX_FICTIONAL_BALANCE) {
+      throw new DomainError("INVALID_ACTION", `El saldo no puede superar ${MAX_FICTIONAL_BALANCE} fichas`);
+    }
+    const updated = await tx.player.update({
+      where: { id: playerId },
+      data: { fictionalBalance: balanceAfter },
+    });
+    await tx.adminAction.create({
+      data: {
+        adminName,
+        type: "ADD_BALANCE",
+        playerId,
+        amount,
+        balanceBefore: player.fictionalBalance,
+        balanceAfter,
+      },
+    });
+    return {
+      id: updated.id,
+      displayName: updated.displayName,
+      fictionalBalance: updated.fictionalBalance,
+      blockedBalance: updated.blockedBalance,
+      createdAt: updated.createdAt.toISOString(),
+    };
   });
-  return {
-    id: updated.id,
-    displayName: updated.displayName,
-    fictionalBalance: updated.fictionalBalance,
-    blockedBalance: updated.blockedBalance,
-    createdAt: updated.createdAt.toISOString(),
-  };
 }

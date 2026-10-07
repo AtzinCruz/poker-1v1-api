@@ -2,8 +2,9 @@ import { createHash } from "node:crypto";
 import type { Prisma, PrismaClient } from "@prisma/client";
 import { DomainError } from "../domain/errors.js";
 
-export function hashRequestBody(body: unknown): string {
-  return createHash("sha256").update(JSON.stringify(body ?? null)).digest("hex");
+/** El hash cubre el scope (operación + partida) además del body: la misma clave no puede reusarse en otro endpoint o partida. */
+export function hashRequest(scope: string, body: unknown): string {
+  return createHash("sha256").update(JSON.stringify({ scope, body: body ?? null })).digest("hex");
 }
 
 type Tx = PrismaClient | Prisma.TransactionClient;
@@ -15,10 +16,10 @@ type Tx = PrismaClient | Prisma.TransactionClient;
  */
 export async function withIdempotency<T>(
   tx: Tx,
-  params: { playerId: string; key: string; requestBody: unknown },
+  params: { playerId: string; key: string; scope: string; requestBody: unknown },
   handler: () => Promise<{ status: number; body: T }>,
 ): Promise<{ status: number; body: T; idempotentReplay: boolean }> {
-  const requestHash = hashRequestBody(params.requestBody);
+  const requestHash = hashRequest(params.scope, params.requestBody);
 
   const existing = await tx.idempotencyRecord.findUnique({
     where: { playerId_key: { playerId: params.playerId, key: params.key } },
@@ -28,7 +29,7 @@ export async function withIdempotency<T>(
     if (existing.requestHash !== requestHash) {
       throw new DomainError(
         "IDEMPOTENCY_CONFLICT",
-        "La misma Idempotency-Key ya se usó con un cuerpo de solicitud distinto",
+        "La misma Idempotency-Key ya se usó con otra solicitud (cuerpo, endpoint o partida distintos)",
       );
     }
     return { status: existing.responseStatus, body: existing.responseBody as T, idempotentReplay: true };

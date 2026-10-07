@@ -9,7 +9,8 @@ services:
       POSTGRES_DB: poker
       POSTGRES_MULTIPLE_DATABASES: poker,poker_test
     ports:
-      - "5433:5432"
+      # Solo localhost: usuario/clave de desarrollo (poker/poker), no deben quedar expuestos a la red.
+      - "127.0.0.1:5433:5432"
     volumes:
       - poker_pg_data:/var/lib/postgresql/data
       - ./docker/init-multi-db.sh:/docker-entrypoint-initdb.d/init-multi-db.sh

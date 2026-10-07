@@ -50,3 +50,8 @@ export async function applyDraw(
     },
   });
 }
+
+/** Todo cambio de estado visible para el cliente (incluido un draw) debe subir stateVersion, o actionVersion no protege nada. */
+export async function bumpStateVersion(tx: Tx, match: Match): Promise<Match> {
+  return tx.match.update({ where: { id: match.id }, data: { stateVersion: { increment: 1 } } });
+}

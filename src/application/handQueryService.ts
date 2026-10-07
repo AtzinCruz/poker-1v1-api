@@ -5,6 +5,7 @@ import { toEngineState, slotToSeat, buttonSlot } from "./bettingRound.js";
 import { getMatchStack, otherSlot, readSlot, slotOfPlayer, type Slot } from "./seats.js";
 import { prisma } from "../infrastructure/prisma/client.js";
 import { resolveExpiredTurns } from "./timeouts.js";
+import { lockMatch } from "./locks.js";
 
 type Tx = Prisma.TransactionClient | typeof prisma;
 
@@ -92,6 +93,8 @@ export function buildMatchView(match: Match, hand: Hand | null, playerId: string
 /** GET /matches/{id}: resuelve timeouts vencidos y arma la vista filtrada para `playerId`. */
 export async function getMatchViewForPlayer(matchId: string, playerId: string): Promise<MatchView> {
   return prisma.$transaction(async (tx) => {
+    // Esta lectura puede aplicar acciones automáticas por timeout: debe serializarse igual que un comando.
+    await lockMatch(tx, matchId);
     const match = await tx.match.findUnique({ where: { id: matchId } });
     if (!match) {
       throw new DomainError("MATCH_NOT_FOUND", "La partida no existe o no es visible");

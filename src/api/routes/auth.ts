@@ -10,9 +10,13 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
     return reply.code(201).send(session);
   });
 
-  app.post("/v1/auth/admin-session", async (request, reply) => {
-    const body = adminSessionSchema.parse(request.body);
-    const session = createAdminSession(body.displayName, body.secret);
-    return reply.code(201).send(session);
-  });
+  app.post(
+    "/v1/auth/admin-session",
+    { config: { rateLimit: { max: 5, timeWindow: "1 minute" } } },
+    async (request, reply) => {
+      const body = adminSessionSchema.parse(request.body);
+      const session = createAdminSession(body.displayName, body.secret);
+      return reply.code(201).send(session);
+    },
+  );
 }

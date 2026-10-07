@@ -51,7 +51,15 @@ async function api(method, path, { body } = {}) {
   const res = await fetch(path, { method, headers, body: body !== undefined ? JSON.stringify(body) : undefined });
   const text = await res.text();
   const parsed = text ? JSON.parse(text) : null;
-  if (!res.ok) throw new ApiError(res.status, parsed);
+  if (!res.ok) {
+    if (res.status === 401 && adminSession?.token && path !== "/v1/auth/admin-session") {
+      saveAdminSession(null);
+      el("admin-session-info").classList.add("hidden");
+      showScreen("login");
+      showError("admin-login-error", "La sesión de administrador venció, entrá de nuevo.");
+    }
+    throw new ApiError(res.status, parsed);
+  }
   return parsed;
 }
 

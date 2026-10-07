@@ -1,5 +1,8 @@
 import { z } from "zod";
 
+/** El stack inicial debe alcanzar al menos para este número de ciegas grandes. */
+export const MIN_BIG_BLINDS_PER_STACK = 5;
+
 export const devSessionSchema = z.object({
   displayName: z.string().trim().min(1).max(40),
 });
@@ -22,6 +25,10 @@ export const createMatchSchema = z.object({
 }).refine((v) => v.smallBlind < v.bigBlind, {
   message: "smallBlind debe ser menor que bigBlind",
   path: ["smallBlind"],
+}).refine((v) => v.bigBlind * MIN_BIG_BLINDS_PER_STACK <= v.startingStack, {
+  // Sin este tope una ciega grande >= stack termina la partida al unirse el rival, sin jugar ninguna mano.
+  message: `bigBlind no puede superar 1/${MIN_BIG_BLINDS_PER_STACK} de startingStack`,
+  path: ["bigBlind"],
 });
 
 export const joinMatchSchema = z.object({

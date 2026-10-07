@@ -12,7 +12,7 @@ export type ActionType = "DRAW" | "BET" | "ALL_IN" | "FOLD";
 
 export type FinishReason = "RESIGN" | "INSUFFICIENT_STACK" | "DISCONNECT_TIMEOUT";
 
-export type HandWinReason = "FOLD" | "SHOWDOWN" | "SPLIT";
+export type HandWinReason = "FOLD" | "FORFEIT" | "SHOWDOWN" | "SPLIT";
 
 export interface MatchRules {
   startingStack: number;

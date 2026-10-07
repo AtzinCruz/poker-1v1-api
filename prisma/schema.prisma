@@ -193,3 +193,17 @@ model IdempotencyRecord {
 
   @@unique([playerId, key])
 }
+
+// Registro de cada ajuste manual de saldo hecho desde el panel de administración.
+model AdminAction {
+  id            String   @id @default(cuid())
+  adminName     String
+  type          String
+  playerId      String
+  amount        Int
+  balanceBefore Int
+  balanceAfter  Int
+  createdAt     DateTime @default(now())
+
+  @@index([playerId])
+}

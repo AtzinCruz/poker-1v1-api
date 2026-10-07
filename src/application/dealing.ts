@@ -31,8 +31,18 @@ export async function dealNewHand(tx: Tx, matchIn: Match): Promise<DealResult> {
   const buttonStack = getMatchStack(matchIn, buttonSlot);
   const otherStack = getMatchStack(matchIn, otherSlotValue);
 
-  if (buttonStack < matchIn.smallBlind || otherStack < matchIn.bigBlind) {
-    const winnerSlot = otherStack >= matchIn.bigBlind ? otherSlotValue : buttonSlot;
+  // Sección 2.1/9 del spec: la sesión termina cuando un jugador no puede cubrir "la ciega grande
+  // requerida para participar en la siguiente mano" — vale para ambos, sea cual sea su posición.
+  const buttonCovers = buttonStack >= matchIn.bigBlind;
+  const otherCovers = otherStack >= matchIn.bigBlind;
+  if (!buttonCovers || !otherCovers) {
+    const winnerSlot = buttonCovers
+      ? buttonSlot
+      : otherCovers
+        ? otherSlotValue
+        : buttonStack >= otherStack
+          ? buttonSlot
+          : otherSlotValue;
     const winnerId = winnerSlot === "player1" ? matchIn.player1Id : matchIn.player2Id!;
     const match = await tx.match.update({
       where: { id: matchIn.id },
@@ -83,6 +93,8 @@ export async function dealNewHand(tx: Tx, matchIn: Match): Promise<DealResult> {
   const player2Contribution = buttonSlot === "player1" ? matchIn.bigBlind : matchIn.smallBlind;
   const player1StackAfterBlind = matchIn.player1Stack! - player1Contribution;
   const player2StackAfterBlind = matchIn.player2Stack! - player2Contribution;
+  // Ambos cubren la ciega grande (se verificó arriba), así que solo quien postea la ciega grande puede
+  // quedar all-in con ella — y su rival (la ciega chica, con stack >= ciega grande) siempre puede igualarla.
   const player1AllIn = player1StackAfterBlind === 0;
   const player2AllIn = player2StackAfterBlind === 0;
 

@@ -83,11 +83,12 @@ describe("abandonar partida (resign)", () => {
 
     const aliceWallet = await getWallet(alice);
     const bobWallet = await getWallet(bob);
-    // Alice se queda con su stack restante (990: 1000 - 10 de ciega); Bob se lleva el suyo (980) íntegro.
+    // Abandonar = perder todo el saldo en juego: Bob se lleva su stack (980), el de Alice (990) y el
+    // pozo de la mano (30). Entraron 2000 fichas y salen 2000: nada se destruye ni se crea.
     expect(aliceWallet.blocked).toBe(0);
     expect(bobWallet.blocked).toBe(0);
-    expect(aliceWallet.available).toBe(990);
-    expect(bobWallet.available).toBe(980);
+    expect(aliceWallet.available).toBe(0);
+    expect(bobWallet.available).toBe(2000);
 
     const matchView = await app.inject({
       method: "GET",
@@ -131,7 +132,9 @@ describe("abandonar partida (resign)", () => {
 
     // El saldo no se liquidó dos veces.
     const aliceWallet = await getWallet(alice);
-    expect(aliceWallet.available).toBe(990);
+    const bobWallet = await getWallet(bob);
+    expect(aliceWallet.available).toBe(0);
+    expect(bobWallet.available).toBe(2000);
   });
 
   it("un jugador ajeno a la partida no puede abandonarla por ella", async () => {

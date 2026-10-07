@@ -142,3 +142,32 @@ disponibles, y `POST /v1/matches/{id}/actions` con el `actionVersion` correspond
 - **Economía ficticia**: al crear o unirse a una partida se reserva `startingStack` del saldo
   disponible del jugador (`blockedBalance`); al terminar la partida (por el motivo que sea) se
   libera la reserva y se acredita el stack final resultante.
+
+## Reglas de terminación, seguridad y operación
+
+- **Abandono (`resign`)**: cierra la mano en curso y el rival recibe todo el saldo en juego —su stack,
+  el del que abandona y el pozo (spec §6/§9: "el rival gana el saldo en juego"). Las fichas se
+  conservan: lo que entra a la partida es exactamente lo que se reparte al terminar.
+- **Eliminación**: una mano nueva solo empieza si *ambos* jugadores cubren la ciega grande (spec
+  §2.1/§9, "la ciega grande requerida para participar"). Si no, gana quien sí puede.
+- **Desconexión**: tras 3 acciones automáticas seguidas de un mismo jugador (sin que él actúe en
+  medio) la partida termina con `DISCONNECT_TIMEOUT` y pierde el saldo en juego, como en un abandono
+  (`DISCONNECT_AFTER_AUTO_ACTIONS` en `src/application/timeouts.ts`). Un barrido cada 15 s
+  (`src/application/maintenance.ts`) aplica los timeouts aunque nadie consulte la partida, y cancela
+  invitaciones sin aceptar tras 24 h liberando la reserva del creador.
+- **Concurrencia**: todo lo que puede mutar una partida (comandos, `GET /matches/:id` que resuelve
+  timeouts, `resign`, barrido) toma `SELECT … FOR UPDATE` sobre la fila de `Match`. `stateVersion`
+  sube con *cada* cambio de estado (apuesta, check, draw, reparto), así que `actionVersion` protege
+  también dentro de una mano.
+- **Idempotencia**: la `Idempotency-Key` queda atada a la operación y a la partida; reusarla en otra
+  responde `409 IDEMPOTENCY_CONFLICT`.
+- **Tokens**: los de jugador llevan `aud: "player"` y los de admin `aud: "admin"`, ambos HS256. El de
+  admin se firma con una clave derivada de `JWT_SECRET` **y** `ADMIN_SECRET`: conocer solo
+  `JWT_SECRET` no alcanza para fabricarlo. Con `NODE_ENV=production` el servidor no arranca si
+  `JWT_SECRET` es el valor por defecto o tiene menos de 32 caracteres (ni `ADMIN_SECRET` < 16).
+  `POST /v1/auth/admin-session` admite 5 intentos por minuto por IP.
+- **Auditoría**: cada ajuste de saldo del panel de admin queda en la tabla `AdminAction`
+  (quién, a quién, monto, saldo antes y después); el saldo no puede superar 2 000 000 000.
+- **Límites**: `bigBlind × 5 ≤ startingStack` al crear la partida.
+- ⚠️ `POST /v1/auth/dev-session` sigue siendo el stub de identidad: **cualquiera puede entrar con
+  cualquier nombre ya existente**. Es aceptable para una demo, no para un despliegue real.

@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import type { Match } from "@prisma/client";
+import type { Match, Prisma } from "@prisma/client";
 import { prisma } from "../infrastructure/prisma/client.js";
 import { withIdempotency } from "../infrastructure/idempotency.js";
 import { DomainError } from "../domain/errors.js";
@@ -7,6 +7,8 @@ import { dealNewHand } from "./dealing.js";
 import { resolveExpiredTurns } from "./timeouts.js";
 import { logEvent } from "./events.js";
 import { refundReservedStack } from "./walletSettlement.js";
+import { finishMatchByForfeit } from "./forfeit.js";
+import { lockMatch } from "./locks.js";
 
 export interface CreateMatchInput {
   creatorId: string;
@@ -51,7 +53,7 @@ export async function createMatch(
 
     const result = await withIdempotency(
       tx,
-      { playerId: input.creatorId, key: input.idempotencyKey, requestBody: input.body },
+      { playerId: input.creatorId, key: input.idempotencyKey, scope: "create-match", requestBody: input.body },
       async () => {
         const { startingStack, smallBlind, bigBlind, turnTimeoutSeconds, inviteeId } = input.body;
 
@@ -109,13 +111,13 @@ export async function joinMatch(
   input: JoinMatchInput,
 ): Promise<{ status: number; body: MatchResource; idempotentReplay: boolean }> {
   return prisma.$transaction(async (tx) => {
-    await tx.$queryRaw`SELECT id FROM "Match" WHERE id = ${input.matchId} FOR UPDATE`;
+    await lockMatch(tx, input.matchId);
     const match = await tx.match.findUnique({ where: { id: input.matchId } });
     if (!match) throw new DomainError("MATCH_NOT_FOUND", "La partida no existe");
 
     const result = await withIdempotency(
       tx,
-      { playerId: input.playerId, key: input.idempotencyKey, requestBody: input.body },
+      { playerId: input.playerId, key: input.idempotencyKey, scope: `join:${input.matchId}`, requestBody: input.body },
       async () => {
         if (match.status !== "WAITING_FOR_OPPONENT") {
           throw new DomainError("INVALID_ACTION", "La partida ya no acepta un segundo jugador");
@@ -168,7 +170,9 @@ export interface ResignInput {
 export async function resignMatch(
   input: ResignInput,
 ): Promise<{ status: number; body: MatchResource; idempotentReplay: boolean }> {
+  // Paso 1: confirma timeouts vencidos (con el lock de la partida) aunque el resign en sí falle.
   await prisma.$transaction(async (tx) => {
+    await lockMatch(tx, input.matchId);
     const match = await tx.match.findUnique({ where: { id: input.matchId } });
     if (!match) return;
     if (match.player1Id !== input.playerId && match.player2Id !== input.playerId) return;
@@ -179,13 +183,13 @@ export async function resignMatch(
   });
 
   return prisma.$transaction(async (tx) => {
-    await tx.$queryRaw`SELECT id FROM "Match" WHERE id = ${input.matchId} FOR UPDATE`;
+    await lockMatch(tx, input.matchId);
     const match = await tx.match.findUnique({ where: { id: input.matchId } });
     if (!match) throw new DomainError("MATCH_NOT_FOUND", "La partida no existe");
 
     const result = await withIdempotency(
       tx,
-      { playerId: input.playerId, key: input.idempotencyKey, requestBody: {} },
+      { playerId: input.playerId, key: input.idempotencyKey, scope: `resign:${input.matchId}`, requestBody: {} },
       async () => {
         if (match.player1Id !== input.playerId && match.player2Id !== input.playerId) {
           throw new DomainError("NOT_MATCH_PLAYER", "El jugador no pertenece a esta partida");
@@ -196,44 +200,10 @@ export async function resignMatch(
 
         let updated: Match;
         if (match.status === "WAITING_FOR_OPPONENT") {
-          updated = await tx.match.update({
-            where: { id: match.id },
-            data: { status: "CANCELLED", stateVersion: { increment: 1 } },
-          });
-          await refundReservedStack(tx, {
-            playerId: updated.player1Id,
-            reservedAmount: updated.startingStack,
-            finalStack: updated.startingStack,
-          });
+          updated = await cancelWaitingMatch(tx, match);
         } else {
-          const winnerId = match.player1Id === input.playerId ? match.player2Id! : match.player1Id;
-          updated = await tx.match.update({
-            where: { id: match.id },
-            data: {
-              status: "MATCH_FINISHED",
-              finishReason: "RESIGN",
-              winnerId,
-              stateVersion: { increment: 1 },
-            },
-          });
-          await refundReservedStack(tx, {
-            playerId: updated.player1Id,
-            reservedAmount: updated.startingStack,
-            finalStack: updated.player1Stack ?? updated.startingStack,
-          });
-          await refundReservedStack(tx, {
-            playerId: updated.player2Id!,
-            reservedAmount: updated.startingStack,
-            finalStack: updated.player2Stack ?? updated.startingStack,
-          });
+          updated = await finishMatchByForfeit(tx, match, input.playerId, "RESIGN");
         }
-
-        await logEvent(tx, {
-          matchId: updated.id,
-          type: "match.finished",
-          stateVersion: updated.stateVersion,
-          publicPayload: { reason: updated.finishReason ?? "CANCELLED", winnerId: updated.winnerId },
-        });
 
         return { status: 200, body: toMatchResource(updated, false) };
       },
@@ -241,6 +211,26 @@ export async function resignMatch(
 
     return { ...result };
   });
+}
+
+/** Cancela una partida que nadie aceptó y libera la reserva de su creador. */
+export async function cancelWaitingMatch(tx: Prisma.TransactionClient, match: Match): Promise<Match> {
+  const updated = await tx.match.update({
+    where: { id: match.id },
+    data: { status: "CANCELLED", stateVersion: { increment: 1 } },
+  });
+  await refundReservedStack(tx, {
+    playerId: updated.player1Id,
+    reservedAmount: updated.startingStack,
+    finalStack: updated.startingStack,
+  });
+  await logEvent(tx, {
+    matchId: updated.id,
+    type: "match.finished",
+    stateVersion: updated.stateVersion,
+    publicPayload: { reason: "CANCELLED", winnerId: null },
+  });
+  return updated;
 }
 
 export interface Invitation {

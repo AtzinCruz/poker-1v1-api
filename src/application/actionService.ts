@@ -7,8 +7,9 @@ import { assertPhaseAllowsAction } from "../domain/stateMachine.js";
 import type { ActionType } from "../domain/types.js";
 import { advanceAfterBettingRoundClosed, advanceAfterDraw, advanceAfterFold } from "./handFlow.js";
 import { persistBettingRoundResult, slotToSeat, buttonSlot, toEngineState } from "./bettingRound.js";
-import { applyDraw, validateDiscardIndexes } from "./drawPhase.js";
+import { applyDraw, bumpStateVersion, validateDiscardIndexes } from "./drawPhase.js";
 import { resolveExpiredTurns } from "./timeouts.js";
+import { lockMatch } from "./locks.js";
 import { buildMatchView } from "./handQueryService.js";
 import { slotOfPlayer } from "./seats.js";
 
@@ -43,7 +44,7 @@ async function loadMatchAndHand(
   tx: Prisma.TransactionClient,
   matchId: string,
 ): Promise<{ match: Match; hand: Hand | null }> {
-  await tx.$queryRaw`SELECT id FROM "Match" WHERE id = ${matchId} FOR UPDATE`;
+  await lockMatch(tx, matchId);
   const match = await tx.match.findUnique({ where: { id: matchId } });
   if (!match) {
     throw new DomainError("MATCH_NOT_FOUND", "La partida no existe o no es visible");
@@ -78,7 +79,7 @@ export async function submitAction(input: SubmitActionInput): Promise<SubmitActi
 
     const result = await withIdempotency(
       tx,
-      { playerId: input.playerId, key: input.idempotencyKey, requestBody: input.body },
+      { playerId: input.playerId, key: input.idempotencyKey, scope: `action:${input.matchId}`, requestBody: input.body },
       async () => {
         if (input.body.actionVersion !== match.stateVersion) {
           throw new DomainError("STALE_STATE", "actionVersion desactualizado", {
@@ -111,6 +112,7 @@ export async function submitAction(input: SubmitActionInput): Promise<SubmitActi
               actionVersion: match.stateVersion,
             },
           });
+          match = await bumpStateVersion(tx, match);
           const advancedDraw = await advanceAfterDraw(tx, match, handAfterDraw, actorSlot);
           match = advancedDraw.match;
           hand = advancedDraw.hand;

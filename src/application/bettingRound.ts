@@ -73,6 +73,7 @@ export async function persistBettingRoundResult(
     data: {
       [matchStackField(button)]: result.state.stacks[buttonSeat],
       [matchStackField(other)]: result.state.stacks[otherSeat],
+      stateVersion: { increment: 1 },
     },
   });
 
