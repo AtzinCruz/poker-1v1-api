@@ -11,8 +11,7 @@ let running = false;
 const timer = setInterval(() => {
   if (running) return;
   running = true;
-  runMaintenance()
-    .catch((err: unknown) => app.log.error({ err }, "Fallo el barrido de mantenimiento"))
+  runMaintenance((err, context) => app.log.error({ err }, `Mantenimiento: ${context}`))
     .finally(() => {
       running = false;
     });

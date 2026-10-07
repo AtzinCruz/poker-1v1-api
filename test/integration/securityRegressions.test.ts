@@ -153,6 +153,30 @@ describe("concurrencia al vencer un turno (crítico #3)", () => {
   });
 });
 
+describe("lecturas sin turno vencido no toman el lock (bajo)", () => {
+  it("un GET normal responde aunque otra transacción tenga bloqueada la partida", async () => {
+    const alice = await registerPlayer(app, "alice-nolock");
+    const bob = await registerPlayer(app, "bob-nolock");
+    const matchId = await startMatch(alice, bob);
+
+    let released = false;
+    let locked!: () => void;
+    const lockAcquired = new Promise<void>((resolve) => (locked = resolve));
+    const holder = prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM "Match" WHERE id = ${matchId} FOR UPDATE`;
+      locked();
+      await new Promise((r) => setTimeout(r, 1500));
+      released = true;
+    });
+    await lockAcquired;
+
+    const v = await view(matchId, alice); // si tomara el lock, esperaría 1.5 s
+    expect(released).toBe(false);
+    expect(v.status).toBe("IN_PROGRESS");
+    await holder;
+  });
+});
+
 describe("actionVersion protege dentro de una mano (alto #4)", () => {
   it("cada apuesta, check y draw sube stateVersion, y una acción con versión vieja da 409", async () => {
     const alice = await registerPlayer(app, "alice-version");
@@ -242,6 +266,24 @@ describe("autenticación (altos #5, #9; medio #10)", () => {
     }
     expect(statuses.slice(0, 5).every((s) => s === 401)).toBe(true);
     expect(statuses.slice(5)).toEqual([429, 429]);
+  });
+});
+
+describe("límite de tasa detrás de un proxy (trustProxy)", () => {
+  it("un cliente no esquiva el límite del login de admin fabricando X-Forwarded-For", async () => {
+    // El proxy de confianza añade la IP real al FINAL; lo que el cliente pone a la izquierda es mentira.
+    const statuses: number[] = [];
+    for (let i = 0; i < 8; i++) {
+      const res = await app.inject({
+        method: "POST",
+        url: "/v1/auth/admin-session",
+        headers: { "x-forwarded-for": `ip-falsa-${i}, 9.9.9.9` },
+        payload: { displayName: "admin", secret: `intento-${i}` },
+      });
+      statuses.push(res.statusCode);
+    }
+    expect(statuses.slice(0, 5).every((s) => s === 401)).toBe(true);
+    expect(statuses.slice(5).every((s) => s === 429)).toBe(true);
   });
 });
 
@@ -345,6 +387,24 @@ describe("terminación de la partida (medios #11, regla de eliminación)", () =>
 
     expect((await prisma.match.findUniqueOrThrow({ where: { id: matchId } })).handNumber).toBe(2);
     expect(await sweepExpiredTurns()).toBe(0);
+  });
+
+  it("una partida en mal estado no frena el barrido de las demás", async () => {
+    const [a1, b1, a2, b2] = await Promise.all(["a1", "b1", "a2", "b2"].map((n) => registerPlayer(app, `${n}-poison`)));
+    const bad = await startMatch(a1!, b1!);
+    const good = await startMatch(a2!, b2!);
+    await expireCurrentTurn(bad);
+    await expireCurrentTurn(good);
+    // Corrompe la mano de `bad`: el turno apunta a alguien que no pertenece a la partida.
+    await prisma.hand.updateMany({ where: { matchId: bad }, data: { toActPlayerId: "fantasma" } });
+
+    const errors: string[] = [];
+    const processed = await sweepExpiredTurns(new Date(), (_err, context) => errors.push(context));
+
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toContain(bad);
+    expect(processed).toBe(1);
+    expect((await prisma.match.findUniqueOrThrow({ where: { id: good } })).handNumber).toBe(2);
   });
 
   it("una invitación que nadie acepta se cancela y libera el saldo reservado de su creador", async () => {

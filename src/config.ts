@@ -20,14 +20,28 @@ function required(name: string): string {
 const jwtSecret = required("JWT_SECRET");
 const adminSecret = process.env.ADMIN_SECRET || null;
 
-if (process.env.NODE_ENV === "production") {
-  if (jwtSecret === "dev-secret-change-me" || jwtSecret.length < 32) {
-    throw new Error("JWT_SECRET es débil (o el valor por defecto): usa al menos 32 caracteres aleatorios en producción");
+const PLACEHOLDER_JWT_SECRET = "dev-secret-change-me";
+const PLACEHOLDER_ADMIN_SECRET = "cambia-esto-en-produccion";
+
+/**
+ * Seguro por defecto: los secretos de ejemplo solo se toleran si el entorno se declara explícitamente
+ * como development o test. Un despliegue que olvide fijar NODE_ENV queda en modo estricto.
+ */
+export function assertSecretsAreStrong(env: { nodeEnv: string | undefined; jwtSecret: string; adminSecret: string | null }): void {
+  if (env.nodeEnv === "development" || env.nodeEnv === "test") return;
+  if (env.jwtSecret === PLACEHOLDER_JWT_SECRET || env.jwtSecret.length < 32) {
+    throw new Error(
+      "JWT_SECRET es débil o es el valor de ejemplo: usa al menos 32 caracteres aleatorios (o define NODE_ENV=development en local)",
+    );
   }
-  if (adminSecret && adminSecret.length < 16) {
-    throw new Error("ADMIN_SECRET es demasiado corta: usa al menos 16 caracteres aleatorios en producción");
+  if (env.adminSecret && (env.adminSecret === PLACEHOLDER_ADMIN_SECRET || env.adminSecret.length < 16)) {
+    throw new Error(
+      "ADMIN_SECRET es débil o es el valor de ejemplo: usa al menos 16 caracteres aleatorios (o define NODE_ENV=development en local)",
+    );
   }
 }
+
+assertSecretsAreStrong({ nodeEnv: process.env.NODE_ENV, jwtSecret, adminSecret });
 
 export const config = {
   port: Number(process.env.PORT ?? 3000),

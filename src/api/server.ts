@@ -14,8 +14,10 @@ import { walletRoutes } from "./routes/wallet.js";
 import { adminRoutes } from "./routes/admin.js";
 
 export async function buildServer(options: { logger?: boolean } = {}) {
-  // trustProxy: detrás del proxy de Railway, sin esto todos los usuarios compartirían el límite de una sola IP.
-  const app = Fastify({ logger: options.logger ?? true, trustProxy: true });
+  // trustProxy (hop < 1) = se confía en UN solo salto (el proxy de Railway) y la IP del cliente es la que ese
+  // proxy añadió al final de X-Forwarded-For. Con `true` se confiaba en toda la cadena y el cliente
+  // podía fabricar una IP distinta por request para esquivar los límites de tasa.
+  const app = Fastify({ logger: options.logger ?? true, trustProxy: (_address: string, hop: number) => hop < 1 });
 
   await app.register(rateLimit, {
     max: 300,

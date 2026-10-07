@@ -150,21 +150,25 @@ disponibles, y `POST /v1/matches/{id}/actions` con el `actionVersion` correspond
   conservan: lo que entra a la partida es exactamente lo que se reparte al terminar.
 - **Eliminación**: una mano nueva solo empieza si *ambos* jugadores cubren la ciega grande (spec
   §2.1/§9, "la ciega grande requerida para participar"). Si no, gana quien sí puede.
-- **Desconexión**: tras 3 acciones automáticas seguidas de un mismo jugador (sin que él actúe en
-  medio) la partida termina con `DISCONNECT_TIMEOUT` y pierde el saldo en juego, como en un abandono
-  (`DISCONNECT_AFTER_AUTO_ACTIONS` en `src/application/timeouts.ts`). Un barrido cada 15 s
+- **Desconexión**: tras ~3 minutos de silencio de un jugador (acciones automáticas seguidas sin que
+  él actúe en medio: 3 con turnos de 60 s, 12 con turnos de 15 s; `disconnectThreshold` en
+  `src/application/timeouts.ts`) la partida termina con `DISCONNECT_TIMEOUT` y pierde el saldo en
+  juego, como en un abandono. Un barrido cada 15 s
   (`src/application/maintenance.ts`) aplica los timeouts aunque nadie consulte la partida, y cancela
   invitaciones sin aceptar tras 24 h liberando la reserva del creador.
-- **Concurrencia**: todo lo que puede mutar una partida (comandos, `GET /matches/:id` que resuelve
-  timeouts, `resign`, barrido) toma `SELECT … FOR UPDATE` sobre la fila de `Match`. `stateVersion`
+- **Concurrencia**: todo lo que puede mutar una partida (comandos, `resign`, barrido, y el
+  `GET /matches/:id` *cuando hay un turno vencido que resolver*) toma `SELECT … FOR UPDATE` sobre la
+  fila de `Match`; el resto de los polls leen con un snapshot sin bloquear. `stateVersion`
   sube con *cada* cambio de estado (apuesta, check, draw, reparto), así que `actionVersion` protege
   también dentro de una mano.
 - **Idempotencia**: la `Idempotency-Key` queda atada a la operación y a la partida; reusarla en otra
   responde `409 IDEMPOTENCY_CONFLICT`.
 - **Tokens**: los de jugador llevan `aud: "player"` y los de admin `aud: "admin"`, ambos HS256. El de
   admin se firma con una clave derivada de `JWT_SECRET` **y** `ADMIN_SECRET`: conocer solo
-  `JWT_SECRET` no alcanza para fabricarlo. Con `NODE_ENV=production` el servidor no arranca si
-  `JWT_SECRET` es el valor por defecto o tiene menos de 32 caracteres (ni `ADMIN_SECRET` < 16).
+  `JWT_SECRET` no alcanza para fabricarlo. Seguro por defecto: salvo que `NODE_ENV` sea `development`
+  o `test` (`npm run dev` lo fija), el servidor no arranca si `JWT_SECRET` es el valor de ejemplo o
+  tiene menos de 32 caracteres (ni `ADMIN_SECRET` el de ejemplo o < 16). `trustProxy` confía en un
+  solo salto (Railway); así `X-Forwarded-For` falsificado no esquiva los límites de tasa.
   `POST /v1/auth/admin-session` admite 5 intentos por minuto por IP.
 - **Auditoría**: cada ajuste de saldo del panel de admin queda en la tabla `AdminAction`
   (quién, a quién, monto, saldo antes y después); el saldo no puede superar 2 000 000 000.

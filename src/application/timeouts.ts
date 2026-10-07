@@ -11,12 +11,17 @@ type Tx = Prisma.TransactionClient;
 
 const MAX_CASCADED_TIMEOUTS = 12;
 
+/** Segundos mínimos de silencio de un jugador antes de darlo por desconectado. */
+export const DISCONNECT_MIN_SILENCE_SECONDS = 180;
+
 /**
- * Cuántas acciones automáticas SEGUIDAS (sin que el jugador actúe él mismo en medio) se toleran
- * antes de darlo por desconectado y terminar la partida con DISCONNECT_TIMEOUT. Con el turno
- * predeterminado de 60 s son ~3 minutos de silencio.
+ * Cuántas acciones automáticas SEGUIDAS (sin que el jugador actúe él mismo en medio) se toleran antes
+ * de darlo por desconectado. Escala con el tiempo por turno para que el umbral sea de tiempo real
+ * (~3 min) y no de cantidad: con turnos de 15 s no bastan 3 acciones (45 s) para perder la partida.
  */
-export const DISCONNECT_AFTER_AUTO_ACTIONS = 3;
+export function disconnectThreshold(turnTimeoutSeconds: number): number {
+  return Math.max(3, Math.ceil(DISCONNECT_MIN_SILENCE_SECONDS / turnTimeoutSeconds));
+}
 
 async function currentHandOf(tx: Tx, match: Match): Promise<Hand | null> {
   return match.handNumber > 0
@@ -24,13 +29,14 @@ async function currentHandOf(tx: Tx, match: Match): Promise<Hand | null> {
     : null;
 }
 
-async function hasBeenSilent(tx: Tx, matchId: string, playerId: string): Promise<boolean> {
+async function hasBeenSilent(tx: Tx, match: Match, playerId: string): Promise<boolean> {
+  const threshold = disconnectThreshold(match.turnTimeoutSeconds);
   const recent = await tx.action.findMany({
-    where: { matchId, playerId },
+    where: { matchId: match.id, playerId },
     orderBy: [{ createdAt: "desc" }, { id: "desc" }],
-    take: DISCONNECT_AFTER_AUTO_ACTIONS,
+    take: threshold,
   });
-  return recent.length === DISCONNECT_AFTER_AUTO_ACTIONS && recent.every((a) => a.isAuto);
+  return recent.length === threshold && recent.every((a) => a.isAuto);
 }
 
 /**
@@ -131,7 +137,7 @@ export async function resolveExpiredTurns(
     }
 
     // ¿Dejó de responder? Varias acciones automáticas seguidas → abandono por desconexión.
-    if (currentMatch.status === "IN_PROGRESS" && (await hasBeenSilent(tx, currentMatch.id, actorId))) {
+    if (currentMatch.status === "IN_PROGRESS" && (await hasBeenSilent(tx, currentMatch, actorId))) {
       currentMatch = await finishMatchByForfeit(tx, currentMatch, actorId, "DISCONNECT_TIMEOUT");
       currentHand = await currentHandOf(tx, currentMatch);
       break;

@@ -92,20 +92,41 @@ export function buildMatchView(match: Match, hand: Hand | null, playerId: string
 
 /** GET /matches/{id}: resuelve timeouts vencidos y arma la vista filtrada para `playerId`. */
 export async function getMatchViewForPlayer(matchId: string, playerId: string): Promise<MatchView> {
+  // Camino rápido (casi todos los polls): lectura consistente con un snapshot, SIN bloquear la partida.
+  // RepeatableRead evita ver una mano a medio actualizar respecto a la partida.
+  const snapshot = await prisma.$transaction(
+    async (tx) => {
+      const match = await tx.match.findUnique({ where: { id: matchId } });
+      if (!match) {
+        throw new DomainError("MATCH_NOT_FOUND", "La partida no existe o no es visible");
+      }
+      if (playerId !== match.player1Id && playerId !== match.player2Id) {
+        throw new DomainError("NOT_MATCH_PLAYER", "El jugador no pertenece a esta partida");
+      }
+      const hand = match.handNumber > 0
+        ? await tx.hand.findUnique({ where: { matchId_number: { matchId, number: match.handNumber } } })
+        : null;
+      return { match, hand };
+    },
+    { isolationLevel: "RepeatableRead" },
+  );
+
+  const turnExpired =
+    snapshot.match.status === "IN_PROGRESS" &&
+    snapshot.hand?.turnExpiresAt != null &&
+    snapshot.hand.turnExpiresAt.getTime() <= Date.now();
+  if (!turnExpired) {
+    return buildMatchView(snapshot.match, snapshot.hand, playerId);
+  }
+
+  // Camino lento: hay un turno vencido que esta lectura debe resolver, así que se serializa igual que
+  // un comando (lock + relectura, porque el estado pudo cambiar entre el snapshot y el lock).
   return prisma.$transaction(async (tx) => {
-    // Esta lectura puede aplicar acciones automáticas por timeout: debe serializarse igual que un comando.
     await lockMatch(tx, matchId);
-    const match = await tx.match.findUnique({ where: { id: matchId } });
-    if (!match) {
-      throw new DomainError("MATCH_NOT_FOUND", "La partida no existe o no es visible");
-    }
-    if (playerId !== match.player1Id && playerId !== match.player2Id) {
-      throw new DomainError("NOT_MATCH_PLAYER", "El jugador no pertenece a esta partida");
-    }
+    const match = await tx.match.findUniqueOrThrow({ where: { id: matchId } });
     const hand = match.handNumber > 0
       ? await tx.hand.findUnique({ where: { matchId_number: { matchId, number: match.handNumber } } })
       : null;
-
     const resolved = await resolveExpiredTurns(tx, match, hand);
     return buildMatchView(resolved.match, resolved.hand, playerId);
   });
