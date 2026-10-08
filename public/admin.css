@@ -1,5 +1,12 @@
 #admin-app {
   max-width: 1100px;
+  margin: 0 auto;
+  padding: var(--s8) var(--s5) var(--s12);
+}
+
+/* El panel usa más ancho que el juego: la barra superior se alinea con él. */
+.topbar-inner {
+  max-width: 1100px;
 }
 
 .admin-section-header {
@@ -49,13 +56,20 @@
 }
 
 .add-balance-row input {
-  width: 90px;
-  padding: 6px 8px;
+  width: 72px;
+  padding: 0 var(--s2);
 }
 
-.add-balance-row .btn {
-  padding: 6px 10px;
-  font-size: 0.8rem;
+.add-balance-row input {
+  height: 32px;
+  font-size: 13px;
+}
+
+.add-balance-row .btn,
+.admin-table .btn {
+  min-height: 32px;
+  padding: 0 var(--s3);
+  font-size: 13px;
 }
 
 .mono {

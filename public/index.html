@@ -2,222 +2,241 @@
 <html lang="es">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Póker Five-Card Draw 1 vs. 1</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="color-scheme" content="light dark" />
+  <meta name="theme-color" content="#f5f5f7" media="(prefers-color-scheme: light)" />
+  <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)" />
+  <title>Five-Card Draw</title>
   <link rel="stylesheet" href="/styles.css" />
 </head>
 <body>
   <header class="topbar">
-    <h1>🃏 Five-Card Draw <span class="muted">1 vs. 1</span></h1>
-    <div id="session-info" class="session-info hidden">
-      <span id="player-name"></span>
-      <span class="wallet">
-        Saldo: <strong id="wallet-available">–</strong>
-        <span class="muted">(bloqueado: <span id="wallet-blocked">0</span>)</span>
-      </span>
-      <button id="btn-logout" class="btn btn-ghost">Salir</button>
+    <div class="topbar-inner">
+      <span class="brand">Five-Card Draw</span>
+      <div id="session-info" class="session-info hidden">
+        <span class="balance-pill" title="Saldo disponible">
+          <span id="wallet-available">–</span>
+          <span class="balance-unit">fichas</span>
+        </span>
+        <span id="wallet-blocked-wrap" class="balance-blocked hidden">
+          <span id="wallet-blocked">0</span> en juego
+        </span>
+        <span id="player-name" class="player-name"></span>
+        <button id="btn-logout" class="btn btn-plain" type="button">Salir</button>
+      </div>
     </div>
   </header>
 
   <main id="app">
-    <!-- Pantalla de login -->
-    <section id="screen-auth" class="screen">
-      <div class="card-panel narrow">
-        <h2>Entrar</h2>
-        <p class="muted">
-          Escribe tu nombre y una contraseña. Si el nombre es nuevo, se crea tu cuenta con esa
-          contraseña; si ya existe, tiene que ser la tuya.
-        </p>
-        <form id="form-login">
-          <label>
-            Tu nombre
-            <input id="input-display-name" type="text" maxlength="40" required placeholder="alice" autocomplete="username" />
+    <!-- Login -->
+    <section id="screen-auth" class="screen screen-center">
+      <div class="auth">
+        <h1 class="large-title">Five-Card Draw</h1>
+        <p class="subtitle">Póker uno contra uno.</p>
+        <form id="form-login" class="group">
+          <label class="field">
+            <span class="field-label">Nombre</span>
+            <input id="input-display-name" type="text" maxlength="40" required autocomplete="username" autocapitalize="off" spellcheck="false" />
           </label>
-          <label>
-            Contraseña (mínimo 8 caracteres)
+          <label class="field">
+            <span class="field-label">Contraseña</span>
             <input id="input-password" type="password" minlength="8" maxlength="72" required autocomplete="current-password" />
           </label>
-          <button type="submit" class="btn btn-primary">Entrar / Crear cuenta</button>
+          <button type="submit" class="btn btn-primary btn-block">Continuar</button>
         </form>
-        <p id="auth-error" class="error hidden"></p>
-        <p class="muted small admin-link">
-          <a href="/admin.html">¿Sos admin? Entrar al panel →</a>
-        </p>
+        <p class="footnote">Si el nombre es nuevo, se crea tu cuenta. Mínimo 8 caracteres.</p>
+        <p id="auth-error" class="error hidden" role="alert"></p>
+        <p class="footnote admin-link"><a href="/admin.html">Panel de administración</a></p>
       </div>
     </section>
 
     <!-- Lobby -->
     <section id="screen-lobby" class="screen hidden">
-      <div class="lobby-grid">
-        <div class="card-panel">
-          <h2>Tu ID de jugador</h2>
-          <p class="muted">Compártelo con tu rival para que pueda invitarte a una partida.</p>
-          <div class="copy-row">
-            <input id="my-player-id" type="text" readonly />
-            <button id="btn-copy-id" class="btn btn-ghost" type="button">Copiar</button>
-          </div>
-        </div>
+      <h1 class="large-title">Hola, <span id="lobby-name"></span></h1>
 
-        <div class="card-panel">
-          <h2>Crear partida</h2>
-          <form id="form-create-match">
-            <label>
-              ID del jugador invitado
-              <input id="input-invitee-id" type="text" required placeholder="pega aquí el ID de tu rival" />
+      <form id="form-create-match" class="group group-hero">
+        <h2 class="title">Nueva partida</h2>
+        <label class="field">
+          <span class="field-label">ID de tu rival</span>
+          <input id="input-invitee-id" type="text" required placeholder="Pega aquí su ID" autocomplete="off" spellcheck="false" />
+        </label>
+        <details class="disclosure">
+          <summary>
+            <span>Reglas</span>
+            <span id="rules-summary" class="disclosure-value">1000 fichas · 10/20 · 60 s</span>
+          </summary>
+          <div class="field-grid">
+            <label class="field">
+              <span class="field-label">Fichas</span>
+              <input id="input-starting-stack" type="number" inputmode="numeric" min="100" max="100000" value="1000" required />
             </label>
-            <div class="field-row">
-              <label>
-                Fichas iniciales
-                <input id="input-starting-stack" type="number" min="100" max="100000" value="1000" required />
-              </label>
-              <label>
-                Ciega chica
-                <input id="input-small-blind" type="number" min="1" value="10" required />
-              </label>
-              <label>
-                Ciega grande
-                <input id="input-big-blind" type="number" min="2" value="20" required />
-              </label>
-            </div>
-            <label>
-              Segundos por turno
-              <input id="input-turn-timeout" type="number" min="15" max="120" value="60" required />
+            <label class="field">
+              <span class="field-label">Ciega chica</span>
+              <input id="input-small-blind" type="number" inputmode="numeric" min="1" value="10" required />
             </label>
-            <button type="submit" class="btn btn-primary">Crear partida</button>
+            <label class="field">
+              <span class="field-label">Ciega grande</span>
+              <input id="input-big-blind" type="number" inputmode="numeric" min="2" value="20" required />
+            </label>
+            <label class="field">
+              <span class="field-label">Segundos por turno</span>
+              <input id="input-turn-timeout" type="number" inputmode="numeric" min="15" max="120" value="60" required />
+            </label>
+          </div>
+        </details>
+        <button type="submit" class="btn btn-primary btn-block">Invitar</button>
+        <p id="create-error" class="error hidden" role="alert"></p>
+      </form>
+
+      <div class="group">
+        <div class="row">
+          <div class="row-text">
+            <span class="headline">Tu ID</span>
+            <span class="footnote">Compártelo para que te inviten.</span>
+          </div>
+          <button id="btn-copy-id" class="btn btn-tinted" type="button">Copiar</button>
+        </div>
+        <input id="my-player-id" class="id-field" type="text" readonly aria-label="Tu ID de jugador" />
+      </div>
+
+      <h2 class="section-header">Más opciones</h2>
+      <div class="group group-list">
+        <details class="disclosure">
+          <summary><span>Unirme con un código</span></summary>
+          <form id="form-join-match" class="stack">
+            <label class="field">
+              <span class="field-label">ID de la partida</span>
+              <input id="input-join-match-id" type="text" required autocomplete="off" spellcheck="false" />
+            </label>
+            <label class="field">
+              <span class="field-label">Token de invitación</span>
+              <input id="input-join-token" type="text" required autocomplete="off" spellcheck="false" />
+            </label>
+            <button type="submit" class="btn btn-tinted btn-block">Unirme</button>
           </form>
-          <p id="create-error" class="error hidden"></p>
-        </div>
+          <p id="join-error" class="error hidden" role="alert"></p>
+        </details>
 
-        <div class="card-panel">
-          <h2>Unirme a una partida</h2>
-          <form id="form-join-match">
-            <label>
-              ID de la partida
-              <input id="input-join-match-id" type="text" required />
+        <details class="disclosure">
+          <summary><span>Reanudar una partida</span></summary>
+          <form id="form-resume-match" class="stack">
+            <label class="field">
+              <span class="field-label">ID de la partida</span>
+              <input id="input-resume-match-id" type="text" required autocomplete="off" spellcheck="false" />
             </label>
-            <label>
-              Token de invitación
-              <input id="input-join-token" type="text" required />
-            </label>
-            <button type="submit" class="btn btn-primary">Unirme</button>
+            <button type="submit" class="btn btn-tinted btn-block">Ir a la mesa</button>
           </form>
-          <p id="join-error" class="error hidden"></p>
-        </div>
+        </details>
 
-        <div class="card-panel" id="waiting-room-panel" hidden>
-          <h2>Esperando al rival…</h2>
-          <p>Comparte estos datos con tu invitado:</p>
-          <div class="copy-row">
-            <span class="muted">Partida:</span>
-            <input id="waiting-match-id" type="text" readonly />
-          </div>
-          <div class="copy-row">
-            <span class="muted">Token:</span>
-            <input id="waiting-join-token" type="text" readonly />
-          </div>
-        </div>
-
-        <div class="card-panel">
-          <h2>Cambiar contraseña</h2>
-          <form id="form-change-password">
-            <label>
-              Contraseña actual
+        <details class="disclosure">
+          <summary><span>Cambiar contraseña</span></summary>
+          <form id="form-change-password" class="stack">
+            <label class="field">
+              <span class="field-label">Contraseña actual</span>
               <input id="input-current-password" type="password" maxlength="72" required autocomplete="current-password" />
             </label>
-            <label>
-              Contraseña nueva (mínimo 8 caracteres)
+            <label class="field">
+              <span class="field-label">Contraseña nueva</span>
               <input id="input-new-password" type="password" minlength="8" maxlength="72" required autocomplete="new-password" />
             </label>
-            <button type="submit" class="btn btn-secondary">Cambiar</button>
+            <button type="submit" class="btn btn-tinted btn-block">Cambiar</button>
           </form>
-          <p id="password-error" class="error hidden"></p>
-          <p id="password-ok" class="muted hidden">Listo: tu contraseña cambió y las demás sesiones se cerraron.</p>
-        </div>
-
-        <div class="card-panel">
-          <h2>Reanudar partida</h2>
-          <form id="form-resume-match">
-            <label>
-              ID de la partida
-              <input id="input-resume-match-id" type="text" required />
-            </label>
-            <button type="submit" class="btn btn-secondary">Ir a la mesa</button>
-          </form>
-        </div>
+          <p id="password-error" class="error hidden" role="alert"></p>
+          <p id="password-ok" class="success hidden" role="status">Contraseña cambiada. Se cerraron tus otras sesiones.</p>
+        </details>
       </div>
     </section>
 
-    <!-- Mesa de juego -->
+    <!-- Mesa -->
     <section id="screen-table" class="screen hidden">
-      <div class="table-topbar">
-        <button id="btn-back-lobby" class="btn btn-ghost">← Lobby</button>
-        <div id="match-status-line" class="muted"></div>
-        <button id="btn-resign" class="btn btn-danger">Abandonar</button>
-      </div>
+      <nav class="table-nav">
+        <button id="btn-back-lobby" class="btn btn-plain btn-back" type="button">Lobby</button>
+        <div class="table-title">
+          <span id="match-hand" class="headline"></span>
+          <span id="match-status-line" class="footnote"></span>
+        </div>
+        <button id="btn-resign" class="btn btn-plain btn-destructive-text" type="button">Abandonar</button>
+      </nav>
 
-      <div id="hand-result-banner" class="banner hidden"></div>
-
-      <div class="table-felt">
-        <div class="player-panel" id="opponent-panel">
-          <div class="player-header">
-            <span class="player-tag">Rival</span>
-            <span id="opponent-id" class="muted small"></span>
+      <div class="table">
+        <section class="seat" id="opponent-panel" aria-label="Rival">
+          <div class="seat-header">
+            <span class="seat-name">Rival</span>
+            <span class="seat-stack"><span id="opponent-stack">–</span> fichas</span>
           </div>
           <div class="cards" id="opponent-cards"></div>
-          <div class="stats">
-            <span>Stack: <strong id="opponent-stack">–</strong></span>
-            <span>Aportó: <strong id="opponent-contribution">–</strong></span>
-          </div>
-        </div>
+          <span class="bet-chip" id="opponent-bet"><span class="bet-chip-label">Apuesta</span> <span id="opponent-contribution">0</span></span>
+        </section>
 
         <div class="pot-area">
-          <div class="pot">Pozo: <strong id="pot-amount">0</strong></div>
-          <div id="turn-indicator" class="turn-indicator"></div>
+          <div class="timer" id="turn-timer" aria-hidden="true">
+            <span id="turn-seconds"></span>
+          </div>
+          <div class="pot">
+            <span class="pot-label">Pozo</span>
+            <span id="pot-amount" class="pot-amount">0</span>
+          </div>
+          <p id="turn-indicator" class="turn-indicator" aria-live="polite"></p>
         </div>
 
-        <div class="player-panel" id="you-panel">
-          <div class="player-header">
-            <span class="player-tag">Vos</span>
-            <span id="you-id" class="muted small"></span>
-          </div>
+        <section class="seat seat-you" id="you-panel" aria-label="Tú">
+          <span class="bet-chip" id="you-bet"><span class="bet-chip-label">Apuesta</span> <span id="you-contribution">0</span></span>
           <div class="cards" id="you-cards"></div>
-          <div class="stats">
-            <span>Stack: <strong id="you-stack">–</strong></span>
-            <span>Aportaste: <strong id="you-contribution">–</strong></span>
+          <div class="seat-header">
+            <span class="seat-name">Tú</span>
+            <span class="seat-stack"><span id="you-stack">–</span> fichas</span>
           </div>
-        </div>
+        </section>
       </div>
 
-      <div id="action-panel" class="action-panel"></div>
-      <p id="action-error" class="error hidden"></p>
+      <div class="action-bar">
+        <p id="action-hint" class="action-hint hidden"></p>
+        <div id="action-panel" class="action-panel"></div>
+        <p id="action-error" class="error hidden" role="alert"></p>
+      </div>
     </section>
   </main>
 
-  <!-- Popup de resultado de mano: showdown con ambas manos reveladas -->
-  <div id="showdown-popup" class="modal-overlay hidden">
-    <div class="modal-box wide">
-      <h3 id="showdown-title">Resultado de la mano</h3>
+  <!-- Aviso breve (resultado de una mano sin showdown, copiado, etc.) -->
+  <div id="hand-result-banner" class="toast hidden" role="status"></div>
+
+  <!-- Showdown -->
+  <div id="showdown-popup" class="sheet-overlay hidden">
+    <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="showdown-title">
+      <p id="showdown-title" class="footnote sheet-eyebrow">Showdown</p>
+      <p id="showdown-result" class="title sheet-title"></p>
       <div class="showdown-hands">
         <div class="showdown-hand">
-          <div class="showdown-hand-label">Vos</div>
-          <div id="showdown-you-cards" class="cards"></div>
+          <span class="caption">Tú</span>
+          <div id="showdown-you-cards" class="cards cards-small"></div>
         </div>
         <div class="showdown-hand">
-          <div class="showdown-hand-label">Rival</div>
-          <div id="showdown-opponent-cards" class="cards"></div>
+          <span class="caption">Rival</span>
+          <div id="showdown-opponent-cards" class="cards cards-small"></div>
         </div>
       </div>
-      <p id="showdown-result" class="showdown-result"></p>
-      <button id="btn-close-showdown" class="btn btn-primary" type="button">Continuar</button>
+      <button id="btn-close-showdown" class="btn btn-primary btn-block" type="button">Continuar</button>
     </div>
   </div>
 
-  <!-- Popup de invitaciones pendientes (aparece sobre cualquier pantalla mientras estás en el lobby) -->
-  <div id="invitation-popup" class="modal-overlay hidden">
-    <div class="modal-box">
-      <h3>📨 Invitación a jugar</h3>
+  <!-- Invitaciones -->
+  <div id="invitation-popup" class="sheet-overlay hidden">
+    <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="invitation-title">
+      <p id="invitation-title" class="title sheet-title">Te invitaron a jugar</p>
       <div id="invitation-list"></div>
-      <button id="btn-dismiss-invitations" class="btn btn-ghost" type="button">Cerrar</button>
+      <button id="btn-dismiss-invitations" class="btn btn-plain btn-block" type="button">Ahora no</button>
+    </div>
+  </div>
+
+  <!-- Confirmación de abandono (reemplaza al confirm() nativo) -->
+  <div id="resign-popup" class="sheet-overlay hidden">
+    <div class="sheet sheet-alert" role="alertdialog" aria-modal="true" aria-labelledby="resign-title" aria-describedby="resign-text">
+      <p id="resign-title" class="headline">¿Abandonar la partida?</p>
+      <p id="resign-text" class="footnote">Tu rival se queda con todas las fichas en juego.</p>
+      <div class="alert-actions">
+        <button id="btn-resign-cancel" class="btn btn-plain" type="button">Cancelar</button>
+        <button id="btn-resign-confirm" class="btn btn-destructive" type="button">Abandonar</button>
+      </div>
     </div>
   </div>
 
