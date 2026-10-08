@@ -324,16 +324,23 @@ function goToLobby() {
   hideShowdownPopup();
   setCurrentMatch(null);
   lastView = null;
+  renderedMyMatchesKey = null; // al volver, pintar la lista aunque no haya cambiado
   showScreen("lobby");
   refreshWallet();
   startInvitationPolling();
 }
 
 // ---------- Invitaciones pendientes ----------
+/** Lo que el lobby refresca periódicamente: invitaciones recibidas y tus partidas abiertas. */
+function lobbyTick() {
+  pollInvitations();
+  refreshMyMatches();
+}
+
 function startInvitationPolling() {
   stopInvitationPolling();
-  pollInvitations();
-  invitationPollTimer = setInterval(pollInvitations, INVITATION_POLL_INTERVAL_MS);
+  lobbyTick();
+  invitationPollTimer = setInterval(lobbyTick, INVITATION_POLL_INTERVAL_MS);
 }
 
 function stopInvitationPolling() {
@@ -422,6 +429,61 @@ async function acceptInvitation(inv) {
   } catch (err) {
     hideInvitationPopup();
     showToast(err.message);
+  }
+}
+
+// ---------- Tus partidas ----------
+let renderedMyMatchesKey = null;
+
+async function refreshMyMatches() {
+  if (document.hidden) return;
+  try {
+    renderMyMatches(await api("GET", "/v1/matches"));
+  } catch {
+    // no bloquea el lobby si falla
+  }
+}
+
+function renderMyMatches(matches) {
+  // Redibujar solo si cambió algo visible: si no, cada refresco quitaría el foco de teclado.
+  const key = JSON.stringify(matches.map((m) => [m.matchId, m.status, m.opponentName, m.handNumber, m.yourTurn]));
+  if (key === renderedMyMatchesKey) return;
+  renderedMyMatchesKey = key;
+
+  el("my-matches").classList.toggle("hidden", matches.length === 0);
+  const list = el("my-matches-list");
+  list.innerHTML = "";
+  for (const match of matches) {
+    const row = document.createElement("button");
+    row.type = "button";
+    row.className = "match-row";
+
+    const text = document.createElement("span");
+    text.className = "row-text";
+    const who = document.createElement("span");
+    who.className = "headline";
+    who.textContent = match.opponentName ? `vs. ${match.opponentName}` : "Partida";
+    const detail = document.createElement("span");
+    detail.className = "footnote";
+    detail.textContent = match.status === "WAITING_FOR_OPPONENT" ? "Esperando que se una" : `Mano ${match.handNumber}`;
+    text.append(who, detail);
+    row.appendChild(text);
+
+    if (match.yourTurn) {
+      const badge = document.createElement("span");
+      badge.className = "turn-badge";
+      badge.textContent = "Tu turno";
+      row.appendChild(badge);
+    }
+    row.setAttribute(
+      "aria-label",
+      `${who.textContent}, ${detail.textContent}${match.yourTurn ? ", es tu turno" : ""}. Ir a la mesa`,
+    );
+    row.addEventListener("click", () => {
+      setCurrentMatch(match.matchId);
+      enterTable(match.matchId);
+    });
+    list.appendChild(row);
   }
 }
 
@@ -547,7 +609,7 @@ document.addEventListener("visibilitychange", () => {
   if (document.hidden) {
     inFlightPoll?.abort(); // el bucle ve la pestaña oculta y espera a que vuelva
   } else if (invitationPollTimer) {
-    pollInvitations(); // al volver al lobby, revisar invitaciones enseguida
+    lobbyTick(); // al volver al lobby, revisar enseguida
   }
 });
 

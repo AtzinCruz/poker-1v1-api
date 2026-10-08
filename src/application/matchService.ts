@@ -262,3 +262,63 @@ export async function listPendingInvitations(playerId: string): Promise<Invitati
     createdAt: m.createdAt.toISOString(),
   }));
 }
+
+export interface ActiveMatchSummary {
+  matchId: string;
+  status: "WAITING_FOR_OPPONENT" | "IN_PROGRESS";
+  /** Rival en la mesa o, si todavía no se unió, el jugador invitado. */
+  opponentName: string | null;
+  handNumber: number;
+  yourTurn: boolean;
+  updatedAt: string;
+}
+
+/** Tope de partidas listadas en el lobby: suficiente para jugar, acotado para no crecer sin límite. */
+const ACTIVE_MATCHES_LIMIT = 20;
+
+/**
+ * Partidas sin terminar en las que participa el jugador (en curso o esperando rival), para que el
+ * lobby permita volver a ellas sin conocer su ID. Dos consultas fijas, sin importar cuántas sean:
+ * las partidas con sus jugadores, y luego los nombres de invitados y la mano actual de todas a la vez.
+ */
+export async function listActiveMatches(playerId: string): Promise<ActiveMatchSummary[]> {
+  const matches = await prisma.match.findMany({
+    where: {
+      status: { in: ["WAITING_FOR_OPPONENT", "IN_PROGRESS"] },
+      OR: [{ player1Id: playerId }, { player2Id: playerId }],
+    },
+    include: { player1: { select: { displayName: true } }, player2: { select: { displayName: true } } },
+    orderBy: { updatedAt: "desc" },
+    take: ACTIVE_MATCHES_LIMIT,
+  });
+  if (matches.length === 0) return [];
+
+  const waitingInviteeIds = matches.filter((m) => !m.player2Id).map((m) => m.inviteeId);
+  const [invitees, hands] = await Promise.all([
+    waitingInviteeIds.length
+      ? prisma.player.findMany({ where: { id: { in: waitingInviteeIds } }, select: { id: true, displayName: true } })
+      : Promise.resolve([]),
+    prisma.hand.findMany({
+      where: { OR: matches.filter((m) => m.handNumber > 0).map((m) => ({ matchId: m.id, number: m.handNumber })) },
+      select: { matchId: true, toActPlayerId: true },
+    }),
+  ]);
+  const inviteeName = new Map(invitees.map((p) => [p.id, p.displayName]));
+  const toActByMatch = new Map(hands.map((h) => [h.matchId, h.toActPlayerId]));
+
+  return matches.map((m) => {
+    const opponentName = !m.player2Id
+      ? (inviteeName.get(m.inviteeId) ?? null)
+      : m.player1Id === playerId
+        ? (m.player2?.displayName ?? null)
+        : m.player1.displayName;
+    return {
+      matchId: m.id,
+      status: m.status as ActiveMatchSummary["status"],
+      opponentName,
+      handNumber: m.handNumber,
+      yourTurn: m.status === "IN_PROGRESS" && toActByMatch.get(m.id) === playerId,
+      updatedAt: m.updatedAt.toISOString(),
+    };
+  });
+}

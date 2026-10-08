@@ -1229,3 +1229,63 @@ input[type="range"]:active::-webkit-slider-thumb {
 .table.is-waiting {
   gap: var(--s2);
 }
+
+/* ---------- Tus partidas (lobby) ---------- */
+.section-header-first {
+  margin-top: 0;
+}
+
+#my-matches {
+  margin-bottom: var(--s6);
+}
+
+.match-row {
+  width: 100%;
+  min-height: 60px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s3);
+  padding: var(--s3) var(--s5);
+  border: 0;
+  background: transparent;
+  color: var(--label);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--t-fast) var(--ease);
+}
+
+.match-row + .match-row {
+  border-top: 0.5px solid var(--separator);
+}
+
+.match-row:hover {
+  background: var(--fill);
+}
+
+.match-row:active {
+  background: var(--fill-strong);
+}
+
+/* Chevron de fila navegable, como en las listas de iOS. */
+.match-row::after {
+  content: "";
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-right: 2px solid var(--tertiary);
+  border-top: 2px solid var(--tertiary);
+  transform: rotate(45deg);
+}
+
+.turn-badge {
+  margin-left: auto;
+  padding: 2px var(--s3);
+  border-radius: var(--r-pill);
+  background: var(--accent);
+  color: var(--on-accent);
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+}

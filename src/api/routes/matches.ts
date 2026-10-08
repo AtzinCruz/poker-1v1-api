@@ -4,7 +4,7 @@ import { ensureMatchListener, subscribeToMatch } from "../../infrastructure/matc
 import { requireAuthenticatedPlayer } from "../auth.js";
 import { requireIdempotencyKey } from "../idempotencyHeader.js";
 import { createMatchSchema, joinMatchSchema } from "../schemas.js";
-import { createMatch, joinMatch, resignMatch, listPendingInvitations } from "../../application/matchService.js";
+import { createMatch, joinMatch, resignMatch, listPendingInvitations, listActiveMatches } from "../../application/matchService.js";
 import { getMatchViewForPlayer } from "../../application/handQueryService.js";
 
 /** Por debajo del timeout de inactividad habitual de proxies (30–60 s). */
@@ -16,6 +16,12 @@ export async function matchRoutes(app: FastifyInstance): Promise<void> {
     const playerId = await requireAuthenticatedPlayer(request);
     const invitations = await listPendingInvitations(playerId);
     return reply.code(200).send(invitations);
+  });
+
+  /** Tus partidas sin terminar (en curso o esperando rival): el lobby las lista para volver a ellas. */
+  app.get("/v1/matches", async (request, reply) => {
+    const playerId = await requireAuthenticatedPlayer(request);
+    return reply.code(200).send(await listActiveMatches(playerId));
   });
 
   app.post("/v1/matches", async (request, reply) => {
