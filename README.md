@@ -92,6 +92,9 @@ partida" desde el lobby.
 | `npm test` | Unitarios + integración (requiere Postgres corriendo). |
 | `npm run test:unit` | Solo el motor de juego, sin base de datos. |
 | `npm run test:integration` | Solo la API completa contra `poker_test`. |
+| `npm run test:coverage` | Toda la suite con cobertura de `src/`; falla si baja de los mínimos de `vitest.config.ts`. |
+| `npm run test:e2e` | Playwright (escritorio y móvil) contra la API real y `poker_test`; levanta el servidor solo. Primera vez: `npx playwright install chromium`. |
+| `npm run loadtest -- <url> [--budget]` | Carga sobre `GET /v1/matches/:id` contra un servidor apuntado a `poker_test`; con `--budget` falla si no cumple el presupuesto (lo usa CI). |
 
 ## Sesión de ejemplo con curl
 
@@ -204,3 +207,6 @@ disponibles, y `POST /v1/matches/{id}/actions` con el `actionVersion` correspond
   texto del usuario, lo que explotan ataques tipo BREACH.
 - **Ajustes de producción**: `connection_limit`/`pool_timeout` en `DATABASE_URL` y
   `UV_THREADPOOL_SIZE` (= vCPU) — ver `.env.example`.
+- **CI** (`.github/workflows/ci.yml`), tres jobs en paralelo contra un Postgres efímero:
+  lint + tipos + tests con mínimo de cobertura + build; E2E con Playwright; y presupuesto de
+  rendimiento (`scripts/loadtest.mjs --budget`).

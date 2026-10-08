@@ -13,53 +13,103 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+# Credenciales efímeras del contenedor de CI: no son secretos reales.
+env:
+  DATABASE_URL: postgresql://poker:poker@localhost:5432/poker_test?schema=public
+  TEST_DATABASE_URL: postgresql://poker:poker@localhost:5432/poker_test?schema=public
+  JWT_SECRET: ci-only-jwt-secret-not-used-anywhere-else
+  ADMIN_SECRET: ci-only-admin-secret
+  NODE_ENV: test
+
 jobs:
   test:
+    name: Lint, tipos, tests y cobertura
     runs-on: ubuntu-latest
     timeout-minutes: 15
-
     services:
       postgres:
         image: postgres:16-alpine
-        env:
-          POSTGRES_USER: poker
-          POSTGRES_PASSWORD: poker
-          POSTGRES_DB: poker_test
-        ports:
-          - 5432:5432
+        env: { POSTGRES_USER: poker, POSTGRES_PASSWORD: poker, POSTGRES_DB: poker_test }
+        ports: ["5432:5432"]
         options: >-
-          --health-cmd "pg_isready -U poker"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 10
-
-    env:
-      # Credenciales efímeras del contenedor de CI: no son secretos reales.
-      DATABASE_URL: postgresql://poker:poker@localhost:5432/poker_test?schema=public
-      TEST_DATABASE_URL: postgresql://poker:poker@localhost:5432/poker_test?schema=public
-      JWT_SECRET: ci-only-jwt-secret-not-used-anywhere-else
-      ADMIN_SECRET: ci-only-admin-secret
-      NODE_ENV: test
-
+          --health-cmd "pg_isready -U poker" --health-interval 5s --health-timeout 5s --health-retries 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
-
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm
-
       # npm ci: instala exactamente lo que fija package-lock.json (falla si el lock no coincide).
       - run: npm ci
-
       # Solo dependencias de producción, y solo high/critical: las de desarrollo no llegan al despliegue.
       - name: Auditoría de dependencias
         run: npm audit --omit=dev --audit-level=high
-
       - run: npx prisma migrate deploy
       - run: npm run lint
       - run: npm run typecheck
-      - run: npm test
+      # Falla si la cobertura de src/ baja de los mínimos de vitest.config.ts.
+      - run: npm run test:coverage
       - run: npm run build
+
+  e2e:
+    name: E2E (Playwright, escritorio y móvil)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env: { POSTGRES_USER: poker, POSTGRES_PASSWORD: poker, POSTGRES_DB: poker_test }
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U poker" --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npx prisma migrate deploy
+      - run: npx playwright install --with-deps chromium
+      # playwright.config.ts levanta la API contra la BD de test.
+      - run: npm run test:e2e
+      - name: Reporte de Playwright (solo si falla)
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: playwright-report
+          path: playwright-report/
+          retention-days: 7
+
+  performance:
+    name: Presupuesto de rendimiento
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env: { POSTGRES_USER: poker, POSTGRES_PASSWORD: poker, POSTGRES_DB: poker_test }
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U poker" --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npx prisma migrate deploy
+      - name: Levantar la API
+        run: |
+          PORT=3100 node --import tsx src/api/start.ts > server.log 2>&1 &
+          for i in $(seq 1 60); do curl -sf http://localhost:3100/health/ready && exit 0; sleep 1; done
+          cat server.log; exit 1
+      # Falla si GET /v1/matches/:id baja del mínimo de req/s o supera el p95 (ver scripts/loadtest.mjs).
+      - run: npm run loadtest -- http://localhost:3100 --budget

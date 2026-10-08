@@ -20,7 +20,9 @@
     "prisma:migrate": "prisma migrate dev",
     "prisma:migrate:deploy": "prisma migrate deploy",
     "prisma:reset": "prisma migrate reset --force --skip-seed",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "test:coverage": "vitest run --coverage",
+    "loadtest": "node scripts/loadtest.mjs"
   },
   "dependencies": {
     "@fastify/compress": "^9.2.0",
@@ -40,6 +42,7 @@
     "@types/pg": "^8.23.1",
     "@typescript-eslint/eslint-plugin": "^8.19.0",
     "@typescript-eslint/parser": "^8.19.0",
+    "@vitest/coverage-v8": "^5.0.3",
     "eslint": "^9.17.0",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2",
