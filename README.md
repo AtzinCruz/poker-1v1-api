@@ -14,10 +14,12 @@ intenciones de juego.
 - ✅ Economía ficticia aislada (saldo disponible/bloqueado por jugador).
 - ✅ **Cliente web jugable** (`public/`): sin build step, servido por el mismo servidor Fastify en
   `http://localhost:3000`. Login, lobby (crear/unirse/reanudar partida), mesa con cartas, apuestas,
-  draw y showdown, todo por polling sobre la API REST (ver detalle abajo).
-- ❌ Canal WebSocket (sección 7) — queda para una siguiente iteración; el cliente actual usa
-  polling (`GET /matches/{id}` cada 1.5s) en su lugar. El log de eventos (`GameEvent`) ya está
-  pensado para alimentar el WebSocket después sin cambiar el resto del modelo.
+  draw y showdown, todo sobre la API REST con long-polling (ver detalle abajo).
+- ❌ Canal WebSocket (sección 7) — queda para una siguiente iteración. En su lugar, el cliente
+  usa long-polling: `GET /v1/matches/{id}?since=<stateVersion>` queda abierto hasta que la partida
+  cambia (aviso por `LISTEN/NOTIFY` de Postgres), vence el turno o pasan 25 s. Requiere conexión
+  directa a Postgres (PgBouncer en modo transacción no soporta `LISTEN`); sin ella, cada espera
+  termina por timeout y todo sigue funcionando, solo más lento.
 - ⚠️ Identidad: el spec asume un módulo de identidad externo que emite JWT. Como stub de
   desarrollo, `POST /v1/auth/session` (nombre + contraseña) crea el jugador si no existe y firma un
   JWT. Las contraseñas se guardan con scrypt y el login admite 10 intentos por minuto por IP. **No es

@@ -9,6 +9,7 @@ import { logEvent } from "./events.js";
 import { refundReservedStack } from "./walletSettlement.js";
 import { finishMatchByForfeit } from "./forfeit.js";
 import { lockAndLoadMatch } from "./locks.js";
+import { notifyMatchChanged } from "../infrastructure/matchNotifier.js";
 
 export interface CreateMatchInput {
   creatorId: string;
@@ -152,6 +153,7 @@ export async function joinMatch(
         });
 
         const deal = await dealNewHand(tx, joined);
+        await notifyMatchChanged(tx, joined.id); // el creador espera en la sala de espera
         return { status: 200, body: toMatchResource(deal.match, false) };
       },
     );
@@ -227,6 +229,7 @@ export async function cancelWaitingMatch(tx: Prisma.TransactionClient, match: Ma
     stateVersion: updated.stateVersion,
     publicPayload: { reason: "CANCELLED", winnerId: null },
   });
+  await notifyMatchChanged(tx, updated.id);
   return updated;
 }
 

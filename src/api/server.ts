@@ -16,6 +16,7 @@ import { handRoutes } from "./routes/hands.js";
 import { walletRoutes } from "./routes/wallet.js";
 import { adminRoutes } from "./routes/admin.js";
 import { prisma } from "../infrastructure/prisma/client.js";
+import { wakeAllWaiters } from "../infrastructure/matchNotifier.js";
 
 // P1001/P1002: BD inalcanzable · P1008: timeout · P1017: conexión cerrada · P2024: pool agotado.
 const DB_UNAVAILABLE_CODES = new Set(["P1001", "P1002", "P1008", "P1017", "P2024"]);
@@ -53,6 +54,8 @@ export async function buildServer(options: { logger?: boolean } = {}) {
   const app = Fastify({ logger: options.logger ?? true, trustProxy: (_address: string, hop: number) => hop < 1 });
 
   registerSecurityHeaders(app);
+  // Los long-polls pueden esperar 25 s: sin esto, cerrar el servidor esperaría a cada uno.
+  app.addHook("preClose", async () => wakeAllWaiters());
 
   // Compresión solo para el cliente estático (app.js 29 KB -> ~7 KB con br). Las respuestas de la API
   // quedan fuera: pesan <1 KB y algunas mezclan un secreto (el JWT del login) con texto que controla

@@ -3,12 +3,14 @@ import { config } from "../config.js";
 import { runMaintenance } from "../application/maintenance.js";
 import { prisma } from "../infrastructure/prisma/client.js";
 import { createShutdown } from "./lifecycle.js";
+import { closeMatchListener, ensureMatchListener } from "../infrastructure/matchNotifier.js";
 
 const MAINTENANCE_INTERVAL_MS = 15_000;
 // Railway espera unos 30 s entre SIGTERM y SIGKILL; 10 s alcanza para las peticiones en curso.
 const SHUTDOWN_GRACE_MS = 10_000;
 
 const app = await buildServer();
+await ensureMatchListener();
 await app.listen({ port: config.port, host: "0.0.0.0" });
 
 let maintenanceRun: Promise<void> | null = null;
@@ -24,7 +26,10 @@ const shutdown = createShutdown({
   app,
   stopTimers: () => clearInterval(timer),
   pendingWork: () => maintenanceRun,
-  disconnect: () => prisma.$disconnect(),
+  disconnect: async () => {
+    await closeMatchListener();
+    await prisma.$disconnect();
+  },
   exit: (code) => process.exit(code),
   graceMs: SHUTDOWN_GRACE_MS,
 });

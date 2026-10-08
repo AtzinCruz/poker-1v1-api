@@ -4,7 +4,9 @@
 
 const SESSION_KEY = "poker_session_v1";
 const LAST_MATCH_KEY = "poker_last_match_v1";
-const POLL_INTERVAL_MS = 1500;
+// El servidor sostiene cada GET ?since= hasta 25 s; el cliente corta a los 35 s por si la red se cuelga.
+const LONG_POLL_CLIENT_TIMEOUT_MS = 35_000;
+const POLL_RETRY_MS = 2000;
 const COUNTDOWN_TICK_MS = 250;
 const INVITATION_POLL_INTERVAL_MS = 3000;
 const URGENT_SECONDS = 10;
@@ -25,7 +27,11 @@ const PHASE_LABEL = {
 let session = loadSession(); // { token, player: { id, displayName, fictionalBalance } }
 let currentMatchId = sessionStorage.getItem(LAST_MATCH_KEY) || null;
 let lastView = null;
-let pollTimer = null;
+// Cada startPolling/stopPolling cambia la generación: un bucle de una generación vieja se detiene solo.
+let pollGeneration = 0;
+let lastShownHandResult = 0;
+// Long-poll en vuelo: se aborta al ocultar la pestaña (libera la conexión en el servidor).
+let inFlightPoll = null;
 let countdownTimer = null;
 let selectedDiscardIndexes = new Set();
 let invitationPollTimer = null;
@@ -92,7 +98,7 @@ class ApiError extends Error {
   }
 }
 
-async function api(method, path, { body, idempotent = false } = {}) {
+async function api(method, path, { body, idempotent = false, timeoutMs, signal } = {}) {
   const headers = {};
   if (body !== undefined) headers["Content-Type"] = "application/json";
   if (session?.token) headers.Authorization = `Bearer ${session.token}`;
@@ -102,6 +108,7 @@ async function api(method, path, { body, idempotent = false } = {}) {
     method,
     headers,
     body: body !== undefined ? JSON.stringify(body) : undefined,
+    signal: combineSignals(signal, timeoutMs ? AbortSignal.timeout(timeoutMs) : undefined),
   });
 
   const text = await res.text();
@@ -114,6 +121,11 @@ async function api(method, path, { body, idempotent = false } = {}) {
     throw new ApiError(res.status, parsed);
   }
   return parsed;
+}
+
+function combineSignals(...signals) {
+  const present = signals.filter(Boolean);
+  return present.length > 1 ? AbortSignal.any(present) : present[0];
 }
 
 /** El token ya no sirve (vencido o revocado): limpiar la sesión y volver al login. */
@@ -330,6 +342,7 @@ function stopInvitationPolling() {
 }
 
 async function pollInvitations() {
+  if (document.hidden) return; // pestaña oculta: nadie va a ver la invitación
   try {
     const invitations = await api("GET", "/v1/invitations");
     const pending = invitations.filter((inv) => !dismissedInvitationIds.has(inv.matchId));
@@ -498,6 +511,7 @@ function enterTable(matchId) {
   hideInvitationPopup();
   hideShowdownPopup();
   lastView = null;
+  lastShownHandResult = 0;
   renderedActionKey = null;
   renderedCardKeys.clear();
   showScreen("table");
@@ -507,24 +521,77 @@ function enterTable(matchId) {
 
 function startPolling() {
   stopPolling();
-  pollOnce();
-  pollTimer = setInterval(pollOnce, POLL_INTERVAL_MS);
   countdownTimer = setInterval(renderCountdown, COUNTDOWN_TICK_MS);
+  void pollLoop(pollGeneration);
 }
 
 function stopPolling() {
-  if (pollTimer) clearInterval(pollTimer);
+  pollGeneration += 1;
   if (countdownTimer) clearInterval(countdownTimer);
-  pollTimer = null;
   countdownTimer = null;
 }
 
-async function pollOnce() {
-  if (!currentMatchId) return;
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+function untilVisible() {
+  return new Promise((resolve) => {
+    const onChange = () => {
+      if (document.hidden) return;
+      document.removeEventListener("visibilitychange", onChange);
+      resolve();
+    };
+    document.addEventListener("visibilitychange", onChange);
+  });
+}
+
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) {
+    inFlightPoll?.abort(); // el bucle ve la pestaña oculta y espera a que vuelva
+  } else if (invitationPollTimer) {
+    pollInvitations(); // al volver al lobby, revisar invitaciones enseguida
+  }
+});
+
+/**
+ * Una petición a la vez (antes: setInterval cada 1.5 s, que acumulaba peticiones si el servidor
+ * tardaba). La primera lectura es inmediata; después, long-poll con la versión que ya tenemos: el
+ * servidor responde cuando la partida cambia. Con la pestaña oculta no se consulta nada.
+ */
+async function pollLoop(generation) {
+  let since;
+  while (generation === pollGeneration && currentMatchId) {
+    if (document.hidden) {
+      await untilVisible();
+      since = undefined; // al volver, lectura inmediata: pudo pasar de todo
+      continue;
+    }
+    const ok = await pollOnce(since, generation);
+    if (!ok) await sleep(POLL_RETRY_MS); // red caída o 503: reintentar sin martillar
+    since = lastView?.stateVersion;
+  }
+}
+
+/** Lee la partida (con `since`, como long-poll). Devuelve false si falló y conviene reintentar. */
+async function pollOnce(since, generation = pollGeneration) {
+  if (!currentMatchId) return true;
   try {
     const previousHandNumber = lastView?.handNumber;
-    const view = await api("GET", `/v1/matches/${currentMatchId}`);
-    if (previousHandNumber && view.handNumber > previousHandNumber) {
+    const query = since !== undefined ? `?since=${since}` : "";
+    const controller = new AbortController();
+    if (since !== undefined) inFlightPoll = controller;
+    let view;
+    try {
+      view = await api("GET", `/v1/matches/${currentMatchId}${query}`, {
+        timeoutMs: LONG_POLL_CLIENT_TIMEOUT_MS,
+        signal: controller.signal,
+      });
+    } finally {
+      if (inFlightPoll === controller) inFlightPoll = null;
+    }
+    if (generation !== pollGeneration) return true; // se cambió de pantalla mientras esperaba
+    // El long-poll y la lectura tras una jugada pueden cruzarse: nunca pintar un estado más viejo.
+    if (lastView && view.id === lastView.id && view.stateVersion < lastView.stateVersion) return true;
+    if (previousHandNumber && view.handNumber > previousHandNumber && previousHandNumber > lastShownHandResult) {
+      lastShownHandResult = previousHandNumber;
       showLastHandResult(previousHandNumber);
     }
     lastView = view;
@@ -532,13 +599,18 @@ async function pollOnce() {
     if (view.status === "MATCH_FINISHED" || view.status === "CANCELLED") {
       refreshWallet();
     }
+    return true;
   } catch (err) {
     if (err.status === 404 || err.status === 403) {
       stopPolling();
       setCurrentMatch(null);
       showScreen("lobby");
       showToast("Esa partida ya no está disponible.");
+      return true;
     }
+    // Abortado a propósito al ocultar la pestaña: no es un error, no hay que esperar para reintentar.
+    if (err.name === "AbortError" && document.hidden) return true;
+    return false;
   }
 }
 

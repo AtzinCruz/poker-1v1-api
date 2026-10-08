@@ -1,6 +1,7 @@
 import type { Hand, Match, Prisma } from "@prisma/client";
 import { prisma } from "../infrastructure/prisma/client.js";
 import { withIdempotency } from "../infrastructure/idempotency.js";
+import { notifyMatchChanged } from "../infrastructure/matchNotifier.js";
 import { applyAllIn, applyCheckOrBet } from "../domain/bettingEngine.js";
 import { DomainError } from "../domain/errors.js";
 import { assertPhaseAllowsAction } from "../domain/stateMachine.js";
@@ -161,6 +162,7 @@ export async function submitAction(input: SubmitActionInput): Promise<SubmitActi
           }
         }
 
+        await notifyMatchChanged(tx, match.id);
         return {
           status: 200,
           body: {

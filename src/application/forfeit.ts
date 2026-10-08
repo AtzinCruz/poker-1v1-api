@@ -2,6 +2,7 @@ import type { Match, Prisma } from "@prisma/client";
 import { logEvent } from "./events.js";
 import { getMatchStack, otherSlot, slotOfPlayer } from "./seats.js";
 import { refundReservedStack } from "./walletSettlement.js";
+import { notifyMatchChanged } from "../infrastructure/matchNotifier.js";
 
 type Tx = Prisma.TransactionClient;
 
@@ -83,6 +84,7 @@ export async function finishMatchByForfeit(
     stateVersion: updated.stateVersion,
     publicPayload: { reason, winnerId, finalStacks },
   });
+  await notifyMatchChanged(tx, updated.id);
 
   return updated;
 }

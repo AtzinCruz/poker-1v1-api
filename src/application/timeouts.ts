@@ -6,6 +6,7 @@ import { advanceAfterBettingRoundClosed, advanceAfterDraw, advanceAfterFold } fr
 import { finishMatchByForfeit } from "./forfeit.js";
 import { logEvent } from "./events.js";
 import { slotOfPlayer } from "./seats.js";
+import { notifyMatchChanged } from "../infrastructure/matchNotifier.js";
 
 type Tx = Prisma.TransactionClient;
 
@@ -144,5 +145,9 @@ export async function resolveExpiredTurns(
     }
   }
 
+  // Cubre todos los caminos que resuelven timeouts: GET, paso 1 de acciones y resign, y el barrido.
+  if (currentMatch.stateVersion !== match.stateVersion) {
+    await notifyMatchChanged(tx, currentMatch.id);
+  }
   return { match: currentMatch, hand: currentHand };
 }
