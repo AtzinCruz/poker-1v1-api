@@ -11,15 +11,16 @@
     "dev": "NODE_ENV=development tsx watch src/api/start.ts",
     "build": "tsc -p tsconfig.build.json",
     "start": "prisma migrate deploy && node dist/api/start.js",
-    "typecheck": "tsc --noEmit",
-    "lint": "eslint src test",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p e2e",
+    "lint": "eslint src test e2e",
     "test": "vitest run",
     "test:unit": "vitest run test/unit",
     "test:integration": "vitest run test/integration",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
     "prisma:migrate:deploy": "prisma migrate deploy",
-    "prisma:reset": "prisma migrate reset --force --skip-seed"
+    "prisma:reset": "prisma migrate reset --force --skip-seed",
+    "test:e2e": "playwright test"
   },
   "dependencies": {
     "@fastify/rate-limit": "^10.2.1",
@@ -31,6 +32,7 @@
     "zod": "^3.24.1"
   },
   "devDependencies": {
+    "@playwright/test": "^1.64.0",
     "@types/jsonwebtoken": "^9.0.7",
     "@types/node": "^22.10.2",
     "@typescript-eslint/eslint-plugin": "^8.19.0",

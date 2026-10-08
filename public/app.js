@@ -180,14 +180,53 @@ function showToast(message, ms = 3200) {
   toastTimer = setTimeout(() => toast.classList.add("hidden"), ms);
 }
 
-function openSheet(id, focusId) {
+// Hojas abiertas → elemento que tenía el foco antes de abrirlas (para devolverlo al cerrar).
+const openSheets = new Map();
+const FOCUSABLE = 'button:not([disabled]), input:not([disabled]), [tabindex="0"]';
+
+/** Mientras haya una hoja abierta, lo de atrás queda `inert`: sin foco ni clics, como promete aria-modal. */
+function setBackgroundInert(inert) {
+  el("app").inert = inert;
+  document.querySelector(".topbar").inert = inert;
+}
+
+function openSheet(id, focusTarget) {
+  if (!openSheets.has(id)) openSheets.set(id, document.activeElement);
   el(id).classList.remove("hidden");
-  if (focusId) el(focusId).focus();
+  setBackgroundInert(true);
+  const target = typeof focusTarget === "string" ? el(focusTarget) : focusTarget;
+  (target ?? el(id).querySelector(FOCUSABLE))?.focus();
 }
 
 function closeSheet(id) {
+  if (!openSheets.has(id)) return;
+  const returnFocus = openSheets.get(id);
+  openSheets.delete(id);
   el(id).classList.add("hidden");
+  if (openSheets.size === 0) setBackgroundInert(false);
+  if (returnFocus?.isConnected) returnFocus.focus();
 }
+
+// Tab y Mayús+Tab circulan dentro de la hoja visible en vez de escaparse a la mesa.
+document.addEventListener("keydown", (evt) => {
+  if (evt.key !== "Tab") return;
+  const sheet = document.querySelector(".sheet-overlay:not(.hidden) .sheet");
+  if (!sheet) return;
+  const items = [...sheet.querySelectorAll(FOCUSABLE)];
+  if (items.length === 0) return;
+  const first = items[0];
+  const last = items[items.length - 1];
+  if (!sheet.contains(document.activeElement)) {
+    evt.preventDefault();
+    first.focus();
+  } else if (evt.shiftKey && document.activeElement === first) {
+    evt.preventDefault();
+    last.focus();
+  } else if (!evt.shiftKey && document.activeElement === last) {
+    evt.preventDefault();
+    first.focus();
+  }
+});
 
 // Escape cierra la hoja visible; un toque fuera de la hoja también.
 document.addEventListener("keydown", (evt) => {
@@ -304,7 +343,13 @@ async function pollInvitations() {
   }
 }
 
+let renderedInvitationKey = null;
+
 function renderInvitationPopup(invitations) {
+  // Redibujar solo si cambió el conjunto: cada poll (3 s) borraba la lista y el foco de teclado con ella.
+  const key = invitations.map((inv) => inv.matchId).join(",");
+  if (invitationPopupVisible && key === renderedInvitationKey) return;
+  renderedInvitationKey = key;
   const list = el("invitation-list");
   list.innerHTML = "";
   for (const inv of invitations) {
@@ -334,15 +379,18 @@ function renderInvitationPopup(invitations) {
     item.appendChild(actions);
     list.appendChild(item);
   }
-  const wasVisible = invitationPopupVisible;
-  el("invitation-popup").classList.remove("hidden");
+  if (invitationPopupVisible) {
+    list.querySelector(".btn-primary")?.focus(); // la lista cambió: el foco anterior ya no existe
+  } else {
+    openSheet("invitation-popup", list.querySelector(".btn-primary"));
+  }
   invitationPopupVisible = true;
-  if (!wasVisible) list.querySelector(".btn-primary")?.focus();
 }
 
 function hideInvitationPopup() {
-  el("invitation-popup").classList.add("hidden");
+  closeSheet("invitation-popup");
   invitationPopupVisible = false;
+  renderedInvitationKey = null;
 }
 
 el("btn-dismiss-invitations").addEventListener("click", hideInvitationPopup);
@@ -533,7 +581,7 @@ function showShowdownPopup(audit, handNumber, youWon) {
 }
 
 function hideShowdownPopup() {
-  el("showdown-popup").classList.add("hidden");
+  closeSheet("showdown-popup");
   clearTimeout(showdownAutoCloseTimer);
 }
 
@@ -700,6 +748,19 @@ function renderCountdown() {
   timer.classList.toggle("urgent", seconds <= URGENT_SECONDS);
   timer.style.setProperty("--progress", String(Math.min(1, msLeft / turnClock.totalMs)));
   el("turn-seconds").textContent = String(seconds);
+
+  // El anillo es aria-hidden: un solo aviso por turno para lectores de pantalla antes del fold automático.
+  if (lastView.turn.playerId === session.player.id && seconds <= URGENT_SECONDS && seconds > 0 && turnClock.warned !== key) {
+    turnClock.warned = key;
+    announce(`Quedan ${seconds} segundos para actuar.`);
+  }
+}
+
+/** Región viva oculta: anuncia sin tocar el texto visible (que el polling reescribe). */
+function announce(message) {
+  const region = el("sr-announcer");
+  region.textContent = "";
+  setTimeout(() => (region.textContent = message), 50);
 }
 
 function showHint(text) {
