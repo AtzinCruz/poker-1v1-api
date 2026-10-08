@@ -7,6 +7,7 @@ const ALGORITHM = "HS256" as const;
 export interface AuthTokenPayload {
   sub: string; // playerId
   displayName: string;
+  tv: number; // Player.tokenVersion al emitirlo: si la cuenta cambia de versión, el token queda revocado
 }
 
 /**
@@ -19,7 +20,7 @@ export function signPlayerToken(payload: AuthTokenPayload): string {
 
 export function verifyPlayerToken(token: string): AuthTokenPayload {
   const payload = jwt.verify(token, config.jwtSecret, { algorithms: [ALGORITHM], audience: "player" });
-  if (typeof payload === "string" || typeof payload.sub !== "string" || !payload.sub) {
+  if (typeof payload === "string" || typeof payload.sub !== "string" || !payload.sub || typeof payload.tv !== "number") {
     throw new Error("Token de jugador inválido");
   }
   return payload as unknown as AuthTokenPayload;

@@ -131,18 +131,19 @@ function renderPlayers(players) {
     tr.appendChild(nameTd);
 
     const passwordTd = document.createElement("td");
-    if (p.hasPassword) {
-      const resetBtn = document.createElement("button");
-      resetBtn.type = "button";
-      resetBtn.className = "btn btn-ghost";
-      resetBtn.textContent = "Restablecer";
-      resetBtn.title = "Borra la contraseña: la próxima persona que entre con este nombre fija una nueva";
-      resetBtn.addEventListener("click", () => resetPassword(p));
-      passwordTd.appendChild(resetBtn);
-    } else {
-      passwordTd.textContent = "sin definir";
-      passwordTd.className = "mono";
+    const resetBtn = document.createElement("button");
+    resetBtn.type = "button";
+    resetBtn.className = "btn btn-ghost";
+    resetBtn.textContent = p.hasPassword ? "Restablecer" : "Asignar contraseña";
+    resetBtn.title = "Genera una contraseña temporal (se muestra una sola vez) y cierra las sesiones abiertas de la cuenta";
+    resetBtn.addEventListener("click", () => resetPassword(p));
+    if (!p.hasPassword) {
+      const note = document.createElement("div");
+      note.className = "mono small";
+      note.textContent = "sin contraseña: nadie puede entrar";
+      passwordTd.appendChild(note);
     }
+    passwordTd.appendChild(resetBtn);
     tr.appendChild(passwordTd);
 
     const availTd = document.createElement("td");
@@ -179,10 +180,14 @@ function renderPlayers(players) {
 }
 
 async function resetPassword(player) {
-  if (!confirm(`¿Restablecer la contraseña de "${player.displayName}"? La próxima persona que entre con ese nombre fijará una nueva.`)) return;
+  if (!confirm(`¿Generar una contraseña temporal para "${player.displayName}"? Se cerrarán sus sesiones abiertas y la contraseña actual dejará de servir.`)) return;
   hideError("admin-players-error");
   try {
-    await api("POST", `/v1/admin/players/${player.id}/reset-password`);
+    const result = await api("POST", `/v1/admin/players/${player.id}/reset-password`);
+    const box = document.getElementById("temp-password-box");
+    document.getElementById("temp-password-text").textContent =
+      `Contraseña temporal de "${result.displayName}": ${result.temporaryPassword}`;
+    box.classList.remove("hidden");
     await loadPlayers();
   } catch (err) {
     showError("admin-players-error", err.message);
@@ -250,3 +255,8 @@ if (adminSession?.token) {
 } else {
   showScreen("login");
 }
+
+document.getElementById("btn-hide-temp-password").addEventListener("click", () => {
+  document.getElementById("temp-password-text").textContent = "";
+  document.getElementById("temp-password-box").classList.add("hidden");
+});

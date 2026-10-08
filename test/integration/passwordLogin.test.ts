@@ -101,32 +101,53 @@ describe("login con contraseña por jugador", () => {
 });
 
 describe("cuentas anteriores a las contraseñas", () => {
-  it("quien entra primero a un nombre sin contraseña fija la suya; después ya no entra cualquiera", async () => {
+  it("una cuenta sin contraseña NO se puede reclamar entrando: nadie se adelanta a su dueña/o", async () => {
     await prisma.player.create({ data: { displayName: "antigua" } }); // sin passwordHash
 
-    const first = await login("antigua", "mi-nueva-contraseña");
-    expect(first.statusCode).toBe(200);
-    expect((await login("antigua", "otra-distinta-123")).statusCode).toBe(401);
-    expect((await login("antigua", "mi-nueva-contraseña")).statusCode).toBe(200);
+    const attempt = await login("antigua", "mi-nueva-contraseña");
+    expect(attempt.statusCode).toBe(401);
+    expect(attempt.json().message).toBe("Nombre o contraseña incorrectos"); // igual que cualquier otra falla
+    expect((await prisma.player.findUniqueOrThrow({ where: { displayName: "antigua" } })).passwordHash).toBeNull();
   });
 
-  it("un admin puede restablecer la contraseña, queda registrado, y la cuenta se puede reclamar de nuevo", async () => {
-    const owner = await registerPlayer(app, "olvidadiza");
+  it("el admin asigna una contraseña temporal: sirve una vez generada, queda registrada y no se guarda en claro", async () => {
+    await prisma.player.create({ data: { displayName: "antigua" } });
+    const owner = await prisma.player.findUniqueOrThrow({ where: { displayName: "antigua" } });
     const headers = await adminHeaders();
-
-    const listed = (await app.inject({ method: "GET", url: "/v1/admin/players", headers })).json();
-    expect(listed.find((p: { id: string }) => p.id === owner.id).hasPassword).toBe(true);
 
     const reset = await app.inject({ method: "POST", url: `/v1/admin/players/${owner.id}/reset-password`, headers });
     expect(reset.statusCode).toBe(200);
-    expect(reset.json().hasPassword).toBe(false);
+    const { temporaryPassword, hasPassword } = reset.json();
+    expect(hasPassword).toBe(true);
+    expect(temporaryPassword).toMatch(/^[a-z2-9]{5}-[a-z2-9]{5}-[a-z2-9]{4}$/);
 
-    expect((await login("olvidadiza", TEST_PASSWORD)).statusCode).toBe(200); // ahora fija la contraseña que quiera
-    expect((await login("olvidadiza", "no-es-la-contraseña")).statusCode).toBe(401);
-
+    const row = await prisma.player.findUniqueOrThrow({ where: { id: owner.id } });
+    expect(row.passwordHash).not.toContain(temporaryPassword);
     const records = await prisma.adminAction.findMany({ where: { playerId: owner.id } });
     expect(records).toHaveLength(1);
     expect(records[0]).toMatchObject({ adminName: "root", type: "RESET_PASSWORD" });
+    expect(JSON.stringify(records[0])).not.toContain(temporaryPassword);
+
+    expect((await login("antigua", "otra-cosa-cualquiera")).statusCode).toBe(401);
+    expect((await login("antigua", temporaryPassword)).statusCode).toBe(200);
+  });
+
+  it("restablecer revoca las sesiones anteriores (un token robado deja de servir)", async () => {
+    const owner = await registerPlayer(app, "olvidadiza");
+    const before = await app.inject({ method: "GET", url: "/v1/wallet", headers: authHeaders(owner) });
+    expect(before.statusCode).toBe(200);
+
+    const headers = await adminHeaders();
+    const reset = await app.inject({ method: "POST", url: `/v1/admin/players/${owner.id}/reset-password`, headers });
+    expect(reset.statusCode).toBe(200);
+
+    const after = await app.inject({ method: "GET", url: "/v1/wallet", headers: authHeaders(owner) });
+    expect(after.statusCode).toBe(401);
+    expect((await login("olvidadiza", TEST_PASSWORD)).statusCode).toBe(401); // la anterior ya no vale
+    const fresh = await login("olvidadiza", reset.json().temporaryPassword);
+    expect(fresh.statusCode).toBe(200);
+    const ok = await app.inject({ method: "GET", url: "/v1/wallet", headers: { authorization: `Bearer ${fresh.json().token}` } });
+    expect(ok.statusCode).toBe(200);
   });
 
   it("restablecer contraseña exige token de admin", async () => {
@@ -137,7 +158,50 @@ describe("cuentas anteriores a las contraseñas", () => {
       headers: { authorization: `Bearer ${owner.token}`, "idempotency-key": randomUUID() },
     });
     expect(res.statusCode).toBe(401);
-    expect((await prisma.player.findUniqueOrThrow({ where: { id: owner.id } })).passwordHash).not.toBeNull();
+    const row = await prisma.player.findUniqueOrThrow({ where: { id: owner.id } });
+    expect(row.tokenVersion).toBe(0);
+    expect(await verifyPassword(TEST_PASSWORD, row.passwordHash!)).toBe(true);
+  });
+});
+
+describe("cambio de contraseña", () => {
+  function change(token: string, currentPassword: string, newPassword: string) {
+    return app.inject({
+      method: "POST",
+      url: "/v1/auth/password",
+      headers: { authorization: `Bearer ${token}` },
+      payload: { currentPassword, newPassword },
+    });
+  }
+
+  it("cambia la contraseña, revoca los tokens anteriores y entrega una sesión nueva", async () => {
+    const me = await registerPlayer(app, "cambiante");
+    const res = await change(me.token, TEST_PASSWORD, "contraseña-nueva-456");
+    expect(res.statusCode).toBe(200);
+    const fresh = res.json().token as string;
+
+    expect((await app.inject({ method: "GET", url: "/v1/wallet", headers: authHeaders(me) })).statusCode).toBe(401);
+    expect(
+      (await app.inject({ method: "GET", url: "/v1/wallet", headers: { authorization: `Bearer ${fresh}` } })).statusCode,
+    ).toBe(200);
+    expect((await login("cambiante", TEST_PASSWORD)).statusCode).toBe(401);
+    expect((await login("cambiante", "contraseña-nueva-456")).statusCode).toBe(200);
+  });
+
+  it("exige la contraseña actual correcta y una nueva de largo válido", async () => {
+    const me = await registerPlayer(app, "cambiante");
+    expect((await change(me.token, "no-es-esta-1234", "contraseña-nueva-456")).statusCode).toBe(401);
+    expect((await change(me.token, TEST_PASSWORD, "corta")).statusCode).toBe(400);
+    expect((await login("cambiante", TEST_PASSWORD)).statusCode).toBe(200);
+  });
+
+  it("sin token no se puede cambiar", async () => {
+    const res = await app.inject({
+      method: "POST",
+      url: "/v1/auth/password",
+      payload: { currentPassword: TEST_PASSWORD, newPassword: "contraseña-nueva-456" },
+    });
+    expect(res.statusCode).toBe(401);
   });
 });
 

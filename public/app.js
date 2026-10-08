@@ -89,7 +89,7 @@ async function api(method, path, { body, idempotent = false } = {}) {
   const parsed = text ? JSON.parse(text) : null;
 
   if (!res.ok) {
-    if (res.status === 401 && session?.token && path !== "/v1/auth/session") {
+    if (res.status === 401 && session?.token && path !== "/v1/auth/session" && path !== "/v1/auth/password") {
       expireSession();
     }
     throw new ApiError(res.status, parsed);
@@ -151,6 +151,22 @@ el("form-login").addEventListener("submit", async (evt) => {
     afterLogin();
   } catch (err) {
     showError("auth-error", err.message);
+  }
+});
+
+el("form-change-password").addEventListener("submit", async (evt) => {
+  evt.preventDefault();
+  hideError("password-error");
+  el("password-ok").classList.add("hidden");
+  try {
+    const result = await api("POST", "/v1/auth/password", {
+      body: { currentPassword: el("input-current-password").value, newPassword: el("input-new-password").value },
+    });
+    saveSession(result);
+    el("form-change-password").reset();
+    el("password-ok").classList.remove("hidden");
+  } catch (err) {
+    showError("password-error", err.message);
   }
 });
 

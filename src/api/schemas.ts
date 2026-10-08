@@ -50,3 +50,8 @@ export const submitActionSchema = z
   });
 
 export type SubmitActionBody = z.infer<typeof submitActionSchema>;
+
+export const changePasswordSchema = z.object({
+  currentPassword: z.string().min(1).max(72),
+  newPassword: z.string().min(8, "La contraseña debe tener al menos 8 caracteres").max(72),
+});

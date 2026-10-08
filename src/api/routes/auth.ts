@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
-import { adminSessionSchema, sessionSchema } from "../schemas.js";
-import { loginOrRegister } from "../../application/authService.js";
+import { adminSessionSchema, changePasswordSchema, sessionSchema } from "../schemas.js";
+import { changePassword, loginOrRegister } from "../../application/authService.js";
+import { requireAuthenticatedPlayer } from "../auth.js";
 import { createAdminSession } from "../../application/adminService.js";
 
 export async function authRoutes(app: FastifyInstance): Promise<void> {
@@ -11,6 +12,17 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
     async (request, reply) => {
       const body = sessionSchema.parse(request.body);
       const session = await loginOrRegister(body.displayName, body.password);
+      return reply.code(200).send(session);
+    },
+  );
+
+  app.post(
+    "/v1/auth/password",
+    { config: { rateLimit: { max: 10, timeWindow: "1 minute" } } },
+    async (request, reply) => {
+      const playerId = await requireAuthenticatedPlayer(request);
+      const body = changePasswordSchema.parse(request.body);
+      const session = await changePassword(playerId, body.currentPassword, body.newPassword);
       return reply.code(200).send(session);
     },
   );

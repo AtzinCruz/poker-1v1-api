@@ -6,7 +6,7 @@ import { submitAction } from "../../application/actionService.js";
 
 export async function actionRoutes(app: FastifyInstance): Promise<void> {
   app.post("/v1/matches/:matchId/actions", async (request, reply) => {
-    const playerId = requireAuthenticatedPlayer(request);
+    const playerId = await requireAuthenticatedPlayer(request);
     const idempotencyKey = requireIdempotencyKey(request);
     const { matchId } = request.params as { matchId: string };
     const body = submitActionSchema.parse(request.body);

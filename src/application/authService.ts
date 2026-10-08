@@ -11,12 +11,20 @@ export interface SessionResult {
 /** Mismo mensaje para "no existe" y "contraseña incorrecta": no revela qué nombres están registrados. */
 const BAD_CREDENTIALS = () => new DomainError("UNAUTHENTICATED", "Nombre o contraseña incorrectos");
 
+function toSession(player: { id: string; displayName: string; fictionalBalance: number; tokenVersion: number }): SessionResult {
+  const token = signPlayerToken({ sub: player.id, displayName: player.displayName, tv: player.tokenVersion });
+  return {
+    token,
+    player: { id: player.id, displayName: player.displayName, fictionalBalance: player.fictionalBalance },
+  };
+}
+
 /**
  * Inicia sesión o crea la cuenta:
  *  - nombre nuevo → se crea con esa contraseña;
  *  - nombre con contraseña → se verifica;
- *  - nombre anterior a las contraseñas (sin hash) → quien entra primero fija la suya
- *    (si la dueña/o no pudiera, un admin la restablece desde el panel).
+ *  - nombre anterior a las contraseñas (sin hash) → NO se puede reclamar entrando: un admin tiene que
+ *    asignarle una contraseña temporal (así nadie se adelanta a la dueña/o de la cuenta).
  * No hay verificación de identidad más allá de la contraseña: no es un IdP real.
  */
 export async function loginOrRegister(displayName: string, password: string): Promise<SessionResult> {
@@ -32,25 +40,26 @@ export async function loginOrRegister(displayName: string, password: string): Pr
       player = await prisma.player.findUnique({ where: { displayName } });
       if (!player?.passwordHash || !(await verifyPassword(password, player.passwordHash))) throw BAD_CREDENTIALS();
     }
-  } else if (player.passwordHash) {
-    if (!(await verifyPassword(password, player.passwordHash))) throw BAD_CREDENTIALS();
-  } else {
-    // Reclamo atómico: si dos personas entran a la vez, solo una fija la contraseña.
-    const passwordHash = await hashPassword(password);
-    const claimed = await prisma.player.updateMany({
-      where: { id: player.id, passwordHash: null },
-      data: { passwordHash },
-    });
-    if (claimed.count !== 1) {
-      const current = await prisma.player.findUniqueOrThrow({ where: { id: player.id } });
-      if (!current.passwordHash || !(await verifyPassword(password, current.passwordHash))) throw BAD_CREDENTIALS();
-      player = current;
-    }
+  } else if (!player.passwordHash || !(await verifyPassword(password, player.passwordHash))) {
+    throw BAD_CREDENTIALS();
   }
 
-  const token = signPlayerToken({ sub: player.id, displayName: player.displayName });
-  return {
-    token,
-    player: { id: player.id, displayName: player.displayName, fictionalBalance: player.fictionalBalance },
-  };
+  return toSession(player);
+}
+
+/**
+ * Cambio de contraseña por la propia persona. Sube `tokenVersion`: todos los tokens emitidos antes
+ * (incluido uno robado) dejan de valer; se devuelve una sesión nueva para quien cambió.
+ */
+export async function changePassword(playerId: string, currentPassword: string, newPassword: string): Promise<SessionResult> {
+  const player = await prisma.player.findUnique({ where: { id: playerId } });
+  if (!player?.passwordHash || !(await verifyPassword(currentPassword, player.passwordHash))) {
+    throw new DomainError("UNAUTHENTICATED", "La contraseña actual no es correcta");
+  }
+  const passwordHash = await hashPassword(newPassword);
+  const updated = await prisma.player.update({
+    where: { id: playerId },
+    data: { passwordHash, tokenVersion: { increment: 1 } },
+  });
+  return toSession(updated);
 }

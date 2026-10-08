@@ -7,13 +7,13 @@ import { getMatchViewForPlayer } from "../../application/handQueryService.js";
 
 export async function matchRoutes(app: FastifyInstance): Promise<void> {
   app.get("/v1/invitations", async (request, reply) => {
-    const playerId = requireAuthenticatedPlayer(request);
+    const playerId = await requireAuthenticatedPlayer(request);
     const invitations = await listPendingInvitations(playerId);
     return reply.code(200).send(invitations);
   });
 
   app.post("/v1/matches", async (request, reply) => {
-    const playerId = requireAuthenticatedPlayer(request);
+    const playerId = await requireAuthenticatedPlayer(request);
     const idempotencyKey = requireIdempotencyKey(request);
     const body = createMatchSchema.parse(request.body);
 
@@ -22,7 +22,7 @@ export async function matchRoutes(app: FastifyInstance): Promise<void> {
   });
 
   app.post("/v1/matches/:matchId/join", async (request, reply) => {
-    const playerId = requireAuthenticatedPlayer(request);
+    const playerId = await requireAuthenticatedPlayer(request);
     const idempotencyKey = requireIdempotencyKey(request);
     const { matchId } = request.params as { matchId: string };
     const body = joinMatchSchema.parse(request.body);
@@ -32,14 +32,14 @@ export async function matchRoutes(app: FastifyInstance): Promise<void> {
   });
 
   app.get("/v1/matches/:matchId", async (request, reply) => {
-    const playerId = requireAuthenticatedPlayer(request);
+    const playerId = await requireAuthenticatedPlayer(request);
     const { matchId } = request.params as { matchId: string };
     const view = await getMatchViewForPlayer(matchId, playerId);
     return reply.code(200).send(view);
   });
 
   app.post("/v1/matches/:matchId/resign", async (request, reply) => {
-    const playerId = requireAuthenticatedPlayer(request);
+    const playerId = await requireAuthenticatedPlayer(request);
     const idempotencyKey = requireIdempotencyKey(request);
     const { matchId } = request.params as { matchId: string };
 

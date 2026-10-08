@@ -39,9 +39,11 @@ enum FinishReason {
 model Player {
   id              String   @id @default(cuid())
   displayName     String   @unique
-  // scrypt (ver infrastructure/auth/password.ts). null = cuenta anterior a las contraseñas: la primera
-  // persona que entre con ese nombre fija la contraseña, o un admin puede restablecerla.
+  // scrypt (ver infrastructure/auth/password.ts). null = cuenta anterior a las contraseñas: nadie puede
+  // entrar hasta que un admin le asigne una contraseña temporal.
   passwordHash    String?
+  // Se incrementa al cambiar o restablecer la contraseña; los tokens con otra versión dejan de valer.
+  tokenVersion    Int      @default(0)
   fictionalBalance Int     @default(1000)
   blockedBalance  Int      @default(0)
   createdAt       DateTime @default(now())

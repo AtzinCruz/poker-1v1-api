@@ -1,6 +1,7 @@
-import { createHash, timingSafeEqual } from "node:crypto";
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { prisma } from "../infrastructure/prisma/client.js";
 import { signAdminToken } from "../infrastructure/auth/jwt.js";
+import { hashPassword } from "../infrastructure/auth/password.js";
 import { config } from "../config.js";
 import { DomainError } from "../domain/errors.js";
 
@@ -124,18 +125,36 @@ export async function addPlayerBalance(playerId: string, amount: number, adminNa
   });
 }
 
+/** Contraseña temporal legible (sin 0/O/1/l/I), ~70 bits de entropía. */
+export function generateTemporaryPassword(): string {
+  const alphabet = "abcdefghjkmnpqrstuvwxyz23456789";
+  const bytes = randomBytes(14);
+  let out = "";
+  for (let i = 0; i < 14; i++) out += alphabet[bytes[i]! % alphabet.length];
+  return `${out.slice(0, 5)}-${out.slice(5, 10)}-${out.slice(10)}`;
+}
+
 /**
- * Borra la contraseña de un jugador (olvidó la suya, o alguien reclamó antes que él una cuenta anterior a
- * las contraseñas): la próxima persona que entre con ese nombre fija una nueva. Queda registrado.
+ * Asigna una contraseña temporal a una cuenta (olvidó la suya, o es anterior a las contraseñas) y revoca
+ * todas sus sesiones. La contraseña se devuelve UNA sola vez, al admin, para que se la haga llegar a la
+ * persona; no se guarda en claro. La cuenta nunca queda "abierta" para que la reclame cualquiera.
  */
-export async function resetPlayerPassword(playerId: string, adminName: string): Promise<AdminPlayerRow> {
+export async function resetPlayerPassword(
+  playerId: string,
+  adminName: string,
+): Promise<AdminPlayerRow & { temporaryPassword: string }> {
+  const temporaryPassword = generateTemporaryPassword();
+  const passwordHash = await hashPassword(temporaryPassword);
   return prisma.$transaction(async (tx) => {
     await tx.$queryRaw`SELECT id FROM "Player" WHERE id = ${playerId} FOR UPDATE`;
     const player = await tx.player.findUnique({ where: { id: playerId } });
     if (!player) {
       throw new DomainError("INVALID_ACTION", "El jugador no existe");
     }
-    const updated = await tx.player.update({ where: { id: playerId }, data: { passwordHash: null } });
+    const updated = await tx.player.update({
+      where: { id: playerId },
+      data: { passwordHash, tokenVersion: { increment: 1 } },
+    });
     await tx.adminAction.create({
       data: {
         adminName,
@@ -149,10 +168,11 @@ export async function resetPlayerPassword(playerId: string, adminName: string): 
     return {
       id: updated.id,
       displayName: updated.displayName,
-      hasPassword: false,
+      hasPassword: true,
       fictionalBalance: updated.fictionalBalance,
       blockedBalance: updated.blockedBalance,
       createdAt: updated.createdAt.toISOString(),
+      temporaryPassword,
     };
   });
 }

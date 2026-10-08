@@ -118,6 +118,23 @@
         </div>
 
         <div class="card-panel">
+          <h2>Cambiar contraseña</h2>
+          <form id="form-change-password">
+            <label>
+              Contraseña actual
+              <input id="input-current-password" type="password" maxlength="72" required autocomplete="current-password" />
+            </label>
+            <label>
+              Contraseña nueva (mínimo 8 caracteres)
+              <input id="input-new-password" type="password" minlength="8" maxlength="72" required autocomplete="new-password" />
+            </label>
+            <button type="submit" class="btn btn-secondary">Cambiar</button>
+          </form>
+          <p id="password-error" class="error hidden"></p>
+          <p id="password-ok" class="muted hidden">Listo: tu contraseña cambió y las demás sesiones se cerraron.</p>
+        </div>
+
+        <div class="card-panel">
           <h2>Reanudar partida</h2>
           <form id="form-resume-match">
             <label>

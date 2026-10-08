@@ -176,6 +176,12 @@ disponibles, y `POST /v1/matches/{id}/actions` con el `actionVersion` correspond
 - **Límites**: `bigBlind × 5 ≤ startingStack` al crear la partida.
 - **Cuentas y contraseñas**: `POST /v1/auth/session` crea la cuenta con la contraseña la primera vez
   que se usa un nombre y la verifica después (mismo mensaje de error para "no existe" y "contraseña
-  incorrecta"). Los nombres anteriores a las contraseñas no tienen hash: quien entra primero fija la
-  suya, y un admin puede borrarla desde el panel ("Restablecer") para recuperar una cuenta. No hay
+  incorrecta"). Los nombres anteriores a las contraseñas no tienen hash y **nadie puede reclamarlos
+  entrando**: un admin les asigna una contraseña temporal desde el panel ("Asignar contraseña" /
+  "Restablecer"), que se muestra una sola vez y no se guarda en claro. Cada jugador puede cambiar la
+  suya (`POST /v1/auth/password`). Cambiar o restablecer una contraseña sube `Player.tokenVersion`, así
+  que todos los tokens emitidos antes dejan de valer (se comprueba en cada petición). No hay
   recuperación por correo: sigue sin ser un IdP real.
+- **Detrás de un proxy**: `trustProxy` confía en **exactamente un** salto. Si hay dos proxies delante
+  (CDN + balanceador) `request.ip` será la IP del primero; si no hay ninguno, hay que desactivarlo. Los
+  límites por IP (login, admin) dependen de que esto sea correcto.

@@ -6,14 +6,14 @@ import { prisma } from "../../infrastructure/prisma/client.js";
 
 export async function handRoutes(app: FastifyInstance): Promise<void> {
   app.get("/v1/matches/:matchId/hands", async (request, reply) => {
-    const playerId = requireAuthenticatedPlayer(request);
+    const playerId = await requireAuthenticatedPlayer(request);
     const { matchId } = request.params as { matchId: string };
     const summaries = await listHandSummaries(prisma, matchId, playerId);
     return reply.code(200).send(summaries);
   });
 
   app.get("/v1/matches/:matchId/hands/:handNumber", async (request, reply) => {
-    const playerId = requireAuthenticatedPlayer(request);
+    const playerId = await requireAuthenticatedPlayer(request);
     const { matchId, handNumber } = request.params as { matchId: string; handNumber: string };
     const number = Number(handNumber);
     if (!Number.isInteger(number) || number < 1) {
