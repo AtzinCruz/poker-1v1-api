@@ -192,3 +192,8 @@ disponibles, y `POST /v1/matches/{id}/actions` con el `actionVersion` correspond
   `npm audit --omit=dev --audit-level=high`, migraciones, lint, typecheck, toda la suite contra un
   Postgres efímero y el build. Dependabot (`.github/dependabot.yml`) propone actualizaciones semanales
   de npm y de las GitHub Actions.
+- **Salud y fallas de infraestructura**: `GET /health/live` solo indica que el proceso responde;
+  `GET /health/ready` (y `/health`) además comprueba la BD con `SELECT 1` (timeout 1 s) y responde
+  `503` si no llega — es el que debe usar el health check del despliegue. Si la BD cae a mitad de una
+  petición (P1001, pool agotado P2024, etc.) la API responde `503 SERVICE_UNAVAILABLE` con
+  `Retry-After: 2`, no un `500` genérico.

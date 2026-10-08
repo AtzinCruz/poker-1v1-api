@@ -7,7 +7,8 @@ export type DomainErrorCode =
   | "IDEMPOTENCY_CONFLICT"
   | "INSUFFICIENT_STACK"
   | "RATE_LIMITED"
-  | "UNAUTHENTICATED";
+  | "UNAUTHENTICATED"
+  | "SERVICE_UNAVAILABLE";
 
 export class DomainError extends Error {
   readonly code: DomainErrorCode;

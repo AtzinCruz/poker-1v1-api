@@ -1,6 +1,7 @@
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import Fastify, { type FastifyError } from "fastify";
+import { Prisma } from "@prisma/client";
 import rateLimit from "@fastify/rate-limit";
 import fastifyStatic from "@fastify/static";
 import { ZodError } from "zod";
@@ -13,6 +14,36 @@ import { actionRoutes } from "./routes/actions.js";
 import { handRoutes } from "./routes/hands.js";
 import { walletRoutes } from "./routes/wallet.js";
 import { adminRoutes } from "./routes/admin.js";
+import { prisma } from "../infrastructure/prisma/client.js";
+
+// P1001/P1002: BD inalcanzable · P1008: timeout · P1017: conexión cerrada · P2024: pool agotado.
+const DB_UNAVAILABLE_CODES = new Set(["P1001", "P1002", "P1008", "P1017", "P2024"]);
+const READINESS_TIMEOUT_MS = 1000;
+
+/** Fallas de infraestructura (no del cliente): el cliente debe reintentar, no corregir su petición. */
+function isDatabaseUnavailable(error: unknown): boolean {
+  return (
+    error instanceof Prisma.PrismaClientInitializationError ||
+    (error instanceof Prisma.PrismaClientKnownRequestError && DB_UNAVAILABLE_CODES.has(error.code))
+  );
+}
+
+async function databaseIsReachable(): Promise<boolean> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    await Promise.race([
+      prisma.$queryRaw`SELECT 1`,
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error("timeout")), READINESS_TIMEOUT_MS);
+      }),
+    ]);
+    return true;
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 export async function buildServer(options: { logger?: boolean } = {}) {
   // trustProxy (hop < 1) = se confía en UN solo salto (el proxy de Railway) y la IP del cliente es la que ese
@@ -56,6 +87,15 @@ export async function buildServer(options: { logger?: boolean } = {}) {
         .send(toProblemJson("INVALID_ACTION", error.message));
       return;
     }
+    if (isDatabaseUnavailable(error)) {
+      request.log.error(error);
+      reply
+        .code(503)
+        .header("retry-after", "2")
+        .type("application/problem+json")
+        .send(toProblemJson("SERVICE_UNAVAILABLE", "Servicio temporalmente no disponible; reintenta en unos segundos"));
+      return;
+    }
     request.log.error(error);
     reply.code(500).type("application/problem+json").send(toProblemJson("INVALID_ACTION", "Error interno del servidor"));
   });
@@ -67,7 +107,17 @@ export async function buildServer(options: { logger?: boolean } = {}) {
   await app.register(walletRoutes);
   await app.register(adminRoutes);
 
-  app.get("/health", async () => ({ status: "ok" }));
+  // live: el proceso responde (para reiniciarlo si se cuelga). ready: además llega a la BD (para
+  // sacarlo del balanceador si no). /health = ready, que es lo que Railway consulta por defecto.
+  // Sin límite de tasa: los sondeos del orquestador no deben consumir la cuota de nadie.
+  const noRateLimit = { config: { rateLimit: false } } as const;
+  const readiness = async (_request: unknown, reply: import("fastify").FastifyReply) =>
+    (await databaseIsReachable())
+      ? reply.code(200).send({ status: "ok" })
+      : reply.code(503).send({ status: "unavailable", reason: "database" });
+  app.get("/health/live", noRateLimit, async () => ({ status: "ok" }));
+  app.get("/health/ready", noRateLimit, readiness);
+  app.get("/health", noRateLimit, readiness);
 
   // Cliente web estático (public/) servido desde el mismo servidor: sin CORS, un solo proceso.
   const publicDir = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "public");

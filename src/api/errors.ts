@@ -9,6 +9,7 @@ const STATUS_BY_CODE: Record<DomainErrorCode, number> = {
   IDEMPOTENCY_CONFLICT: 409,
   INSUFFICIENT_STACK: 422,
   RATE_LIMITED: 429,
+  SERVICE_UNAVAILABLE: 503,
 };
 
 export function statusForCode(code: DomainErrorCode): number {
