@@ -39,8 +39,6 @@ let dismissedInvitationIds = new Set();
 let invitationPopupVisible = false;
 let showdownAutoCloseTimer = null;
 let toastTimer = null;
-// Datos de la invitación recién creada, para mostrarlos en la sala de espera de la mesa.
-let pendingInvite = null;
 // Duración observada del turno actual (la vista no trae turnTimeoutSeconds): alimenta el anillo.
 let turnClock = { key: null, totalMs: 1 };
 let renderedActionKey = null;
@@ -418,7 +416,6 @@ function hideInvitationPopup() {
 el("btn-dismiss-invitations").addEventListener("click", hideInvitationPopup);
 
 async function acceptInvitation(inv) {
-  hideError("join-error");
   try {
     await api("POST", `/v1/matches/${inv.matchId}/join`, {
       body: { joinToken: inv.joinToken },
@@ -524,35 +521,12 @@ el("form-create-match").addEventListener("submit", async (evt) => {
   };
   try {
     const match = await api("POST", "/v1/matches", { body, idempotent: true });
-    pendingInvite = { matchId: match.id, joinToken: match.joinToken };
     el("input-invitee-id").value = "";
     setCurrentMatch(match.id);
     enterTable(match.id);
   } catch (err) {
     showError("create-error", err.message);
   }
-});
-
-el("form-join-match").addEventListener("submit", async (evt) => {
-  evt.preventDefault();
-  hideError("join-error");
-  const matchId = el("input-join-match-id").value.trim();
-  const joinToken = el("input-join-token").value.trim();
-  try {
-    await api("POST", `/v1/matches/${matchId}/join`, { body: { joinToken }, idempotent: true });
-    setCurrentMatch(matchId);
-    enterTable(matchId);
-  } catch (err) {
-    showError("join-error", err.message);
-  }
-});
-
-el("form-resume-match").addEventListener("submit", (evt) => {
-  evt.preventDefault();
-  const matchId = el("input-resume-match-id").value.trim();
-  if (!matchId) return;
-  setCurrentMatch(matchId);
-  enterTable(matchId);
 });
 
 // ---------- Table ----------
@@ -900,7 +874,6 @@ async function requestRematch(matchId) {
   buttons.forEach((b) => (b.disabled = true));
   try {
     const match = await api("POST", `/v1/matches/${matchId}/rematch`, { idempotent: true });
-    if (match.joinToken) pendingInvite = { matchId: match.id, joinToken: match.joinToken };
     refreshWallet();
     openMatch(match.id);
   } catch (err) {
@@ -1062,27 +1035,10 @@ function renderActionPanel(view, isYourTurn) {
 }
 
 function makeWaitingCard() {
-  const card = document.createElement("div");
-  card.className = "waiting-card";
   const p = document.createElement("p");
-  p.className = "footnote";
-  p.textContent = "Tu rival verá la invitación al entrar. Si prefiere unirse a mano, compártele estos datos:";
-  card.appendChild(p);
-
-  const invite = pendingInvite?.matchId === currentMatchId ? pendingInvite : { matchId: currentMatchId };
-  for (const [label, value] of [["ID", invite.matchId], ["Token", invite.joinToken]]) {
-    if (!value) continue;
-    const line = document.createElement("div");
-    line.className = "copy-line";
-    const input = document.createElement("input");
-    input.readOnly = true;
-    input.value = value;
-    input.setAttribute("aria-label", label);
-    const btn = makeButton("Copiar", "btn-tinted", (evt) => copyText(value, evt.currentTarget));
-    line.append(input, btn);
-    card.appendChild(line);
-  }
-  return card;
+  p.className = "waiting";
+  p.textContent = "Invitación enviada. La mesa empieza en cuanto tu rival la acepte.";
+  return p;
 }
 
 function makeButton(label, cls, onClick) {

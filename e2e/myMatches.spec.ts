@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { startMatch } from "./helpers.js";
+import { login, newPlayerPage, startMatch, uniqueName } from "./helpers.js";
 
 test("al salir al lobby la partida aparece en «Tus partidas» y se puede volver a la mesa", async ({ browser }) => {
   const { ana, beto } = await startMatch(browser);
@@ -27,4 +27,18 @@ test("sin partidas abiertas la sección no se muestra", async ({ browser }) => {
   await ana.getByRole("button", { name: "Volver al lobby" }).click();
   await expect(ana.locator("#screen-lobby")).toBeVisible();
   await expect(ana.locator("#my-matches")).toBeHidden();
+});
+
+test("el lobby no pide IDs ni tokens: invitaciones y «Tus partidas» los reemplazan", async ({ browser }) => {
+  const ana = await newPlayerPage(browser);
+  const beto = await newPlayerPage(browser);
+  await login(ana, uniqueName("ana"));
+  await login(beto, uniqueName("beto"));
+  await expect(ana.getByText("Unirme con un código")).toHaveCount(0);
+  await expect(ana.getByText("Reanudar una partida")).toHaveCount(0);
+
+  await ana.fill("#input-invitee-id", await beto.inputValue("#my-player-id"));
+  await ana.click("#form-create-match button[type=submit]");
+  await expect(ana.locator("#action-panel")).toHaveText("Invitación enviada. La mesa empieza en cuanto tu rival la acepte.");
+  await expect(ana.locator("#action-panel input")).toHaveCount(0); // ya no hay ID ni token para copiar
 });
