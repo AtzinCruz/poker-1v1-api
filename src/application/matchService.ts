@@ -8,7 +8,7 @@ import { resolveExpiredTurns } from "./timeouts.js";
 import { logEvent } from "./events.js";
 import { refundReservedStack } from "./walletSettlement.js";
 import { finishMatchByForfeit } from "./forfeit.js";
-import { lockMatch } from "./locks.js";
+import { lockAndLoadMatch } from "./locks.js";
 
 export interface CreateMatchInput {
   creatorId: string;
@@ -111,8 +111,7 @@ export async function joinMatch(
   input: JoinMatchInput,
 ): Promise<{ status: number; body: MatchResource; idempotentReplay: boolean }> {
   return prisma.$transaction(async (tx) => {
-    await lockMatch(tx, input.matchId);
-    const match = await tx.match.findUnique({ where: { id: input.matchId } });
+    const match = await lockAndLoadMatch(tx, input.matchId);
     if (!match) throw new DomainError("MATCH_NOT_FOUND", "La partida no existe");
 
     const result = await withIdempotency(
@@ -172,8 +171,7 @@ export async function resignMatch(
 ): Promise<{ status: number; body: MatchResource; idempotentReplay: boolean }> {
   // Paso 1: confirma timeouts vencidos (con el lock de la partida) aunque el resign en sí falle.
   await prisma.$transaction(async (tx) => {
-    await lockMatch(tx, input.matchId);
-    const match = await tx.match.findUnique({ where: { id: input.matchId } });
+    const match = await lockAndLoadMatch(tx, input.matchId);
     if (!match) return;
     if (match.player1Id !== input.playerId && match.player2Id !== input.playerId) return;
     const hand = match.handNumber > 0
@@ -183,8 +181,7 @@ export async function resignMatch(
   });
 
   return prisma.$transaction(async (tx) => {
-    await lockMatch(tx, input.matchId);
-    const match = await tx.match.findUnique({ where: { id: input.matchId } });
+    const match = await lockAndLoadMatch(tx, input.matchId);
     if (!match) throw new DomainError("MATCH_NOT_FOUND", "La partida no existe");
 
     const result = await withIdempotency(

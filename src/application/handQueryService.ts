@@ -5,7 +5,7 @@ import { toEngineState, slotToSeat, buttonSlot } from "./bettingRound.js";
 import { getMatchStack, otherSlot, readSlot, slotOfPlayer, type Slot } from "./seats.js";
 import { prisma } from "../infrastructure/prisma/client.js";
 import { resolveExpiredTurns } from "./timeouts.js";
-import { lockMatch } from "./locks.js";
+import { lockAndLoadMatch } from "./locks.js";
 
 type Tx = Prisma.TransactionClient | typeof prisma;
 
@@ -122,8 +122,8 @@ export async function getMatchViewForPlayer(matchId: string, playerId: string): 
   // Camino lento: hay un turno vencido que esta lectura debe resolver, así que se serializa igual que
   // un comando (lock + relectura, porque el estado pudo cambiar entre el snapshot y el lock).
   return prisma.$transaction(async (tx) => {
-    await lockMatch(tx, matchId);
-    const match = await tx.match.findUniqueOrThrow({ where: { id: matchId } });
+    const match = await lockAndLoadMatch(tx, matchId);
+    if (!match) throw new DomainError("MATCH_NOT_FOUND", "La partida no existe o no es visible");
     const hand = match.handNumber > 0
       ? await tx.hand.findUnique({ where: { matchId_number: { matchId, number: match.handNumber } } })
       : null;

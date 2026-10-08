@@ -43,7 +43,7 @@ async function hasBeenSilent(tx: Tx, match: Match, playerId: string): Promise<bo
  * Resuelve de forma perezosa cualquier turno vencido antes de leer o mutar más estado
  * (sección 2.4: "Si un turno expira..."). Se llama al inicio de cada comando, de cada lectura de
  * partida y desde el barrido en segundo plano (maintenance.ts). Debe invocarse con la fila de
- * Match bloqueada (lockMatch).
+ * Match bloqueada (lockAndLoadMatch).
  */
 export async function resolveExpiredTurns(
   tx: Tx,

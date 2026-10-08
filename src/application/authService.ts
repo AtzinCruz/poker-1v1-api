@@ -2,6 +2,7 @@ import { prisma } from "../infrastructure/prisma/client.js";
 import { signPlayerToken } from "../infrastructure/auth/jwt.js";
 import { hashPassword, verifyPassword } from "../infrastructure/auth/password.js";
 import { DomainError } from "../domain/errors.js";
+import { forgetTokenVersion } from "../infrastructure/auth/tokenVersionCache.js";
 
 export interface SessionResult {
   token: string;
@@ -65,5 +66,6 @@ export async function changePassword(playerId: string, currentPassword: string, 
     where: { id: playerId },
     data: { passwordHash, tokenVersion: { increment: 1 } },
   });
+  forgetTokenVersion(playerId);
   return toSession(updated);
 }

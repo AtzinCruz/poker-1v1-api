@@ -2,6 +2,7 @@ import { createHash, randomInt, timingSafeEqual } from "node:crypto";
 import { prisma } from "../infrastructure/prisma/client.js";
 import { signAdminToken } from "../infrastructure/auth/jwt.js";
 import { hashPassword } from "../infrastructure/auth/password.js";
+import { forgetTokenVersion } from "../infrastructure/auth/tokenVersionCache.js";
 import { config } from "../config.js";
 import { DomainError } from "../domain/errors.js";
 
@@ -147,7 +148,7 @@ export async function resetPlayerPassword(
 ): Promise<AdminPlayerRow & { temporaryPassword: string }> {
   const temporaryPassword = generateTemporaryPassword();
   const passwordHash = await hashPassword(temporaryPassword);
-  return prisma.$transaction(async (tx) => {
+  const result = await prisma.$transaction(async (tx) => {
     await tx.$queryRaw`SELECT id FROM "Player" WHERE id = ${playerId} FOR UPDATE`;
     const player = await tx.player.findUnique({ where: { id: playerId } });
     if (!player) {
@@ -177,4 +178,7 @@ export async function resetPlayerPassword(
       temporaryPassword,
     };
   });
+  // Después del COMMIT: invalidar antes dejaría que una petición concurrente volviera a cachear la versión vieja.
+  forgetTokenVersion(playerId);
+  return result;
 }

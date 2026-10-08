@@ -1,5 +1,5 @@
 import { prisma } from "../infrastructure/prisma/client.js";
-import { tryLockMatch } from "./locks.js";
+import { tryLockAndLoadMatch } from "./locks.js";
 import { cancelWaitingMatch } from "./matchService.js";
 import { resolveExpiredTurns } from "./timeouts.js";
 
@@ -50,8 +50,7 @@ export async function sweepExpiredTurns(
     try {
       const handled = await prisma.$transaction(async (tx) => {
         // SKIP LOCKED: si una petición u otra instancia ya tiene la partida, ella resuelve el turno.
-        if (!(await tryLockMatch(tx, matchId))) return false;
-        const match = await tx.match.findUnique({ where: { id: matchId } });
+        const match = await tryLockAndLoadMatch(tx, matchId);
         if (!match || match.status !== "IN_PROGRESS") return false;
         const hand = await tx.hand.findUnique({ where: { matchId_number: { matchId, number: match.handNumber } } });
         await resolveExpiredTurns(tx, match, hand);
@@ -80,8 +79,7 @@ export async function expireStaleInvitations(
   for (const { id } of stale) {
     try {
       await prisma.$transaction(async (tx) => {
-        if (!(await tryLockMatch(tx, id))) return;
-        const match = await tx.match.findUnique({ where: { id } });
+        const match = await tryLockAndLoadMatch(tx, id);
         if (!match || match.status !== "WAITING_FOR_OPPONENT") return;
         await cancelWaitingMatch(tx, match);
         cancelled += 1;

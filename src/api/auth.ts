@@ -1,6 +1,6 @@
 import type { FastifyRequest } from "fastify";
 import { DomainError } from "../domain/errors.js";
-import { prisma } from "../infrastructure/prisma/client.js";
+import { currentTokenVersion } from "../infrastructure/auth/tokenVersionCache.js";
 import { verifyAdminToken, verifyPlayerToken } from "../infrastructure/auth/jwt.js";
 
 function bearerToken(request: FastifyRequest): string {
@@ -19,8 +19,7 @@ export async function requireAuthenticatedPlayer(request: FastifyRequest): Promi
   } catch {
     throw new DomainError("UNAUTHENTICATED", "JWT inválido o vencido");
   }
-  const player = await prisma.player.findUnique({ where: { id: payload.sub }, select: { tokenVersion: true } });
-  if (!player || player.tokenVersion !== payload.tv) {
+  if ((await currentTokenVersion(payload.sub)) !== payload.tv) {
     throw new DomainError("UNAUTHENTICATED", "La sesión ya no es válida; vuelve a entrar");
   }
   return payload.sub;

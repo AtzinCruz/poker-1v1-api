@@ -9,7 +9,7 @@ import { advanceAfterBettingRoundClosed, advanceAfterDraw, advanceAfterFold } fr
 import { persistBettingRoundResult, slotToSeat, buttonSlot, toEngineState } from "./bettingRound.js";
 import { applyDraw, bumpStateVersion, validateDiscardIndexes } from "./drawPhase.js";
 import { resolveExpiredTurns } from "./timeouts.js";
-import { lockMatch } from "./locks.js";
+import { lockAndLoadMatch } from "./locks.js";
 import { buildMatchView } from "./handQueryService.js";
 import { slotOfPlayer } from "./seats.js";
 
@@ -44,8 +44,7 @@ async function loadMatchAndHand(
   tx: Prisma.TransactionClient,
   matchId: string,
 ): Promise<{ match: Match; hand: Hand | null }> {
-  await lockMatch(tx, matchId);
-  const match = await tx.match.findUnique({ where: { id: matchId } });
+  const match = await lockAndLoadMatch(tx, matchId);
   if (!match) {
     throw new DomainError("MATCH_NOT_FOUND", "La partida no existe o no es visible");
   }
