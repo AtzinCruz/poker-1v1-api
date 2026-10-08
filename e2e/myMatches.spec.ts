@@ -24,7 +24,7 @@ test("sin partidas abiertas la sección no se muestra", async ({ browser }) => {
   await ana.locator("#btn-resign").click();
   await ana.locator("#btn-resign-confirm").click();
   await expect(ana.locator("#match-status-line")).toHaveText("Partida terminada");
-  await ana.getByRole("button", { name: "Nueva partida" }).click();
+  await ana.getByRole("button", { name: "Volver al lobby" }).click();
   await expect(ana.locator("#screen-lobby")).toBeVisible();
   await expect(ana.locator("#my-matches")).toBeHidden();
 });

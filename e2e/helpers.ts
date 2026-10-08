@@ -29,18 +29,30 @@ export async function login(page: Page, name: string): Promise<void> {
 }
 
 /** Ana crea la partida invitando a Beto; Beto acepta desde la hoja de invitación. */
-export async function startMatch(
-  browser: Browser,
-  rules: { turnTimeoutSeconds?: number } = {},
-): Promise<{ ana: Page; beto: Page }> {
+export interface RulesOverride {
+  startingStack?: number;
+  smallBlind?: number;
+  bigBlind?: number;
+  turnTimeoutSeconds?: number;
+}
+
+export async function startMatch(browser: Browser, rules: RulesOverride = {}): Promise<{ ana: Page; beto: Page }> {
   const ana = await newPlayerPage(browser);
   const beto = await newPlayerPage(browser);
   await login(ana, uniqueName("ana"));
   await login(beto, uniqueName("beto"));
 
-  if (rules.turnTimeoutSeconds) {
+  const fields: [keyof RulesOverride, string][] = [
+    ["startingStack", "#input-starting-stack"],
+    ["smallBlind", "#input-small-blind"],
+    ["bigBlind", "#input-big-blind"],
+    ["turnTimeoutSeconds", "#input-turn-timeout"],
+  ];
+  if (fields.some(([key]) => rules[key] !== undefined)) {
     await ana.locator(".group-hero .disclosure summary").click();
-    await ana.fill("#input-turn-timeout", String(rules.turnTimeoutSeconds));
+    for (const [key, selector] of fields) {
+      if (rules[key] !== undefined) await ana.fill(selector, String(rules[key]));
+    }
   }
   await ana.fill("#input-invitee-id", await beto.inputValue("#my-player-id"));
   await ana.click("#form-create-match button[type=submit]");

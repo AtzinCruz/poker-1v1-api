@@ -82,6 +82,12 @@ model Match {
   finishReason FinishReason?
   winnerId     String?
 
+  // Revancha: partida nueva con las mismas reglas creada desde esta (ya terminada). Única: una
+  // partida tiene a lo sumo una revancha vigente; si se cancela, se puede pedir otra.
+  rematchMatchId String? @unique
+  rematch        Match?  @relation("Rematch", fields: [rematchMatchId], references: [id])
+  rematchOf      Match?  @relation("Rematch")
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 

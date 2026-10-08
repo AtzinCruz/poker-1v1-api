@@ -577,6 +577,7 @@ function enterTable(matchId) {
   lastView = null;
   lastShownHandResult = 0;
   renderedActionKey = null;
+  renderedFinishedKey = null;
   renderedCardKeys.clear();
   showScreen("table");
   selectedDiscardIndexes = new Set();
@@ -757,6 +758,8 @@ function renderTable(view) {
 
   const waiting = view.status === "WAITING_FOR_OPPONENT";
   document.querySelector(".table").classList.toggle("is-waiting", waiting);
+  // Terminada: las fichas ya se repartieron; el pozo y las apuestas de la última mano solo confunden.
+  document.querySelector(".table").classList.toggle("is-finished", view.status === "MATCH_FINISHED");
   el("pot-amount").textContent = view.pot.toLocaleString("es");
 
   el("you-stack").textContent = waiting ? "–" : view.you.stack.toLocaleString("es");
@@ -795,7 +798,9 @@ function renderTable(view) {
   el("btn-resign").classList.toggle("hidden", view.status !== "IN_PROGRESS" && view.status !== "WAITING_FOR_OPPONENT");
 
   if (finished) {
-    stopPolling();
+    // Una partida terminada sigue escuchando (long-poll): así aparece al instante la revancha que
+    // pida el rival. Solo una cancelada ya no puede cambiar.
+    if (view.status === "CANCELLED") stopPolling();
     renderFinished(view);
   }
 }
@@ -805,7 +810,15 @@ function setBetChip(who, amount) {
   el(`${who}-bet`).classList.toggle("empty", !amount);
 }
 
+let renderedFinishedKey = null;
+
 function renderFinished(view) {
+  // Solo redibujar si cambió algo (resultado u oferta de revancha): el long-poll despierta cada 25 s.
+  const key = JSON.stringify([view.id, view.status, view.winnerId, view.finishReason, view.rematch]);
+  if (key === renderedFinishedKey) return;
+  const previous = renderedFinishedKey ? JSON.parse(renderedFinishedKey)[4] : undefined;
+  renderedFinishedKey = key;
+
   const panel = el("action-panel");
   panel.innerHTML = "";
   hideHint();
@@ -830,8 +843,71 @@ function renderFinished(view) {
     detail.textContent = "Tus fichas reservadas volvieron a tu saldo.";
   }
 
-  wrap.append(title, detail, makeButton("Nueva partida", "btn-primary", goToLobby));
+  wrap.append(title, detail);
+  if (view.status === "MATCH_FINISHED") {
+    wrap.appendChild(makeRematchSection(view, previous));
+  } else {
+    wrap.appendChild(makeButton("Nueva partida", "btn-primary", goToLobby));
+  }
   panel.appendChild(wrap);
+}
+
+/** Oferta, espera o acceso a la revancha según su estado; siempre con salida al lobby. */
+function makeRematchSection(view, previousRematch) {
+  const section = document.createElement("div");
+  section.className = "rematch";
+  const rival = view.opponent?.displayName || "Tu rival";
+  const rematch = view.rematch && view.rematch.status !== "CANCELLED" ? view.rematch : null;
+  const r = view.rules;
+
+  const status = document.createElement("p");
+  status.className = "rematch-status";
+  const rules = document.createElement("p");
+  rules.className = "footnote";
+  rules.textContent =
+    `Mismas reglas: ${r.startingStack.toLocaleString("es")} fichas · ciegas ${r.smallBlind}/${r.bigBlind} · ${r.turnTimeoutSeconds} s`;
+  const actions = document.createElement("div");
+  actions.className = "rematch-actions";
+  const lobby = makeButton("Volver al lobby", "btn-gray", goToLobby);
+
+  if (!rematch) {
+    status.textContent = view.rematch?.status === "CANCELLED" ? "La revancha se canceló." : "¿Otra partida?";
+    actions.append(lobby, makeButton("Revancha", "btn-primary", () => requestRematch(view.id)));
+  } else if (rematch.status === "WAITING_FOR_OPPONENT" && !rematch.requestedByYou) {
+    status.textContent = `${rival} quiere la revancha.`;
+    actions.append(lobby, makeButton("Aceptar revancha", "btn-primary", () => requestRematch(view.id)));
+    if (previousRematch?.matchId !== rematch.matchId) announce(`${rival} quiere la revancha.`);
+  } else if (rematch.status === "WAITING_FOR_OPPONENT") {
+    status.textContent = `Esperando a que ${rival} acepte la revancha.`;
+    actions.append(lobby, makeButton("Ir a la revancha", "btn-tinted", () => openMatch(rematch.matchId)));
+  } else {
+    status.textContent = "La revancha ya empezó.";
+    actions.append(lobby, makeButton("Ir a la revancha", "btn-primary", () => openMatch(rematch.matchId)));
+  }
+  section.append(status, rules, actions);
+  return section;
+}
+
+function openMatch(matchId) {
+  setCurrentMatch(matchId);
+  enterTable(matchId);
+}
+
+/** Pide (o acepta, si el rival ya la pidió) la revancha y lleva a la mesa nueva. */
+async function requestRematch(matchId) {
+  hideError("action-error");
+  const buttons = el("action-panel").querySelectorAll("button");
+  buttons.forEach((b) => (b.disabled = true));
+  try {
+    const match = await api("POST", `/v1/matches/${matchId}/rematch`, { idempotent: true });
+    if (match.joinToken) pendingInvite = { matchId: match.id, joinToken: match.joinToken };
+    refreshWallet();
+    openMatch(match.id);
+  } catch (err) {
+    buttons.forEach((b) => (b.disabled = false));
+    const entry = lastView?.rules?.startingStack?.toLocaleString("es") ?? "?";
+    showError("action-error", err.code === "INSUFFICIENT_STACK" ? `No tienes saldo suficiente: la entrada es de ${entry} fichas.` : err.message);
+  }
 }
 
 /** Vuelve a pintar las cartas solo si cambiaron, así la animación de reparto no se repite en cada poll. */

@@ -46,6 +46,60 @@ function toMatchResource(match: Match, includeJoinToken: boolean): MatchResource
   };
 }
 
+type Tx = Prisma.TransactionClient;
+
+export interface MatchRulesInput {
+  startingStack: number;
+  smallBlind: number;
+  bigBlind: number;
+  turnTimeoutSeconds: number;
+  maxDiscard: number;
+}
+
+/** Bloquea al jugador y pasa `amount` de su saldo disponible al bloqueado (la entrada a la partida). */
+async function reserveStack(tx: Tx, playerId: string, amount: number): Promise<void> {
+  await tx.$queryRaw`SELECT id FROM "Player" WHERE id = ${playerId} FOR UPDATE`;
+  const player = await tx.player.findUniqueOrThrow({ where: { id: playerId } });
+  if (player.fictionalBalance < amount) {
+    throw new DomainError("INSUFFICIENT_STACK", "Saldo ficticio insuficiente para esta entrada");
+  }
+  await tx.player.update({
+    where: { id: playerId },
+    data: { fictionalBalance: player.fictionalBalance - amount, blockedBalance: player.blockedBalance + amount },
+  });
+}
+
+/** Crea una partida esperando al invitado y reserva la entrada de quien la crea. */
+async function createWaitingMatchInTx(tx: Tx, creatorId: string, inviteeId: string, rules: MatchRulesInput): Promise<Match> {
+  await reserveStack(tx, creatorId, rules.startingStack);
+  return tx.match.create({
+    data: {
+      status: "WAITING_FOR_OPPONENT",
+      ...rules,
+      player1Id: creatorId,
+      inviteeId,
+      joinToken: randomBytes(16).toString("hex"),
+    },
+  });
+}
+
+/** Sienta al invitado en una partida en espera (ya bloqueada), reserva su entrada y reparte la primera mano. */
+async function joinWaitingMatchInTx(tx: Tx, match: Match, playerId: string): Promise<Match> {
+  await reserveStack(tx, playerId, match.startingStack);
+  const joined = await tx.match.update({
+    where: { id: match.id },
+    data: {
+      player2Id: playerId,
+      player1Stack: match.startingStack,
+      player2Stack: match.startingStack,
+      stateVersion: { increment: 1 },
+    },
+  });
+  const deal = await dealNewHand(tx, joined);
+  await notifyMatchChanged(tx, joined.id); // el creador espera en la sala de espera
+  return deal.match;
+}
+
 export async function createMatch(
   input: CreateMatchInput,
 ): Promise<{ status: number; body: MatchResource; idempotentReplay: boolean }> {
@@ -66,33 +120,13 @@ export async function createMatch(
           throw new DomainError("INVALID_ACTION", "El jugador invitado no existe");
         }
 
-        const creator = await tx.player.findUniqueOrThrow({ where: { id: input.creatorId } });
-        if (creator.fictionalBalance < startingStack) {
-          throw new DomainError("INSUFFICIENT_STACK", "Saldo ficticio insuficiente para esta entrada");
-        }
-
-        await tx.player.update({
-          where: { id: input.creatorId },
-          data: {
-            fictionalBalance: creator.fictionalBalance - startingStack,
-            blockedBalance: creator.blockedBalance + startingStack,
-          },
+        const match = await createWaitingMatchInTx(tx, input.creatorId, inviteeId, {
+          startingStack,
+          smallBlind,
+          bigBlind,
+          turnTimeoutSeconds: turnTimeoutSeconds ?? 60,
+          maxDiscard: 5,
         });
-
-        const match = await tx.match.create({
-          data: {
-            status: "WAITING_FOR_OPPONENT",
-            startingStack,
-            smallBlind,
-            bigBlind,
-            turnTimeoutSeconds: turnTimeoutSeconds ?? 60,
-            maxDiscard: 5,
-            player1Id: input.creatorId,
-            inviteeId,
-            joinToken: randomBytes(16).toString("hex"),
-          },
-        });
-
         return { status: 201, body: toMatchResource(match, true) };
       },
     );
@@ -129,32 +163,8 @@ export async function joinMatch(
           throw new DomainError("INVALID_ACTION", "Token de invitación inválido");
         }
 
-        await tx.$queryRaw`SELECT id FROM "Player" WHERE id = ${input.playerId} FOR UPDATE`;
-        const invitee = await tx.player.findUniqueOrThrow({ where: { id: input.playerId } });
-        if (invitee.fictionalBalance < match.startingStack) {
-          throw new DomainError("INSUFFICIENT_STACK", "Saldo ficticio insuficiente para esta entrada");
-        }
-        await tx.player.update({
-          where: { id: input.playerId },
-          data: {
-            fictionalBalance: invitee.fictionalBalance - match.startingStack,
-            blockedBalance: invitee.blockedBalance + match.startingStack,
-          },
-        });
-
-        const joined = await tx.match.update({
-          where: { id: match.id },
-          data: {
-            player2Id: input.playerId,
-            player1Stack: match.startingStack,
-            player2Stack: match.startingStack,
-            stateVersion: { increment: 1 },
-          },
-        });
-
-        const deal = await dealNewHand(tx, joined);
-        await notifyMatchChanged(tx, joined.id); // el creador espera en la sala de espera
-        return { status: 200, body: toMatchResource(deal.match, false) };
+        const started = await joinWaitingMatchInTx(tx, match, input.playerId);
+        return { status: 200, body: toMatchResource(started, false) };
       },
     );
 
@@ -230,6 +240,7 @@ export async function cancelWaitingMatch(tx: Prisma.TransactionClient, match: Ma
     publicPayload: { reason: "CANCELLED", winnerId: null },
   });
   await notifyMatchChanged(tx, updated.id);
+  await touchRematchParent(tx, updated.id);
   return updated;
 }
 
@@ -320,5 +331,83 @@ export async function listActiveMatches(playerId: string): Promise<ActiveMatchSu
       yourTurn: m.status === "IN_PROGRESS" && toActByMatch.get(m.id) === playerId,
       updatedAt: m.updatedAt.toISOString(),
     };
+  });
+}
+
+/**
+ * Si `rematchId` es la revancha de otra partida, sube la versión de esa partida original y avisa:
+ * quien sigue en su mesa terminada ve el cambio (revancha aceptada o cancelada) por el long-poll.
+ */
+async function touchRematchParent(tx: Tx, rematchId: string): Promise<void> {
+  const parent = await tx.match.findUnique({ where: { rematchMatchId: rematchId }, select: { id: true } });
+  if (!parent) return;
+  await tx.match.update({ where: { id: parent.id }, data: { stateVersion: { increment: 1 } } });
+  await notifyMatchChanged(tx, parent.id);
+}
+
+export interface RematchInput {
+  matchId: string;
+  playerId: string;
+  idempotencyKey: string;
+}
+
+/**
+ * "Quiero la revancha" sobre una partida terminada, con exactamente las mismas reglas (fichas,
+ * ciegas, segundos por turno y descarte máximo). Es simétrico: el primero que la pide crea la
+ * partida nueva (201, queda esperando al rival); si el rival ya la había pedido, pedirla equivale a
+ * aceptarla (200, empieza la mano). La partida original queda bloqueada durante todo el proceso,
+ * así que dos pedidos simultáneos nunca crean dos revanchas.
+ */
+export async function requestRematch(
+  input: RematchInput,
+): Promise<{ status: number; body: MatchResource; idempotentReplay: boolean }> {
+  return prisma.$transaction(async (tx) => {
+    const original = await lockAndLoadMatch(tx, input.matchId);
+    if (!original) throw new DomainError("MATCH_NOT_FOUND", "La partida no existe");
+
+    const result = await withIdempotency(
+      tx,
+      { playerId: input.playerId, key: input.idempotencyKey, scope: `rematch:${input.matchId}`, requestBody: {} },
+      async () => {
+        if (input.playerId !== original.player1Id && input.playerId !== original.player2Id) {
+          throw new DomainError("NOT_MATCH_PLAYER", "El jugador no pertenece a esta partida");
+        }
+        if (original.status !== "MATCH_FINISHED" || !original.player2Id) {
+          throw new DomainError("INVALID_ACTION", "Solo se puede pedir la revancha de una partida terminada");
+        }
+        const opponentId = input.playerId === original.player1Id ? original.player2Id : original.player1Id;
+
+        if (original.rematchMatchId) {
+          const existing = await lockAndLoadMatch(tx, original.rematchMatchId);
+          if (existing?.status === "WAITING_FOR_OPPONENT") {
+            if (existing.player1Id === input.playerId) {
+              return { status: 200, body: toMatchResource(existing, true) }; // ya la habías pedido
+            }
+            const started = await joinWaitingMatchInTx(tx, existing, input.playerId); // la pidió el rival: aceptar
+            await touchRematchParent(tx, existing.id);
+            return { status: 200, body: toMatchResource(started, false) };
+          }
+          if (existing && existing.status !== "CANCELLED") {
+            return { status: 200, body: toMatchResource(existing, false) }; // ya se está jugando o se jugó
+          }
+          // Cancelada: se puede pedir una nueva.
+        }
+
+        const rematch = await createWaitingMatchInTx(tx, input.playerId, opponentId, {
+          startingStack: original.startingStack,
+          smallBlind: original.smallBlind,
+          bigBlind: original.bigBlind,
+          turnTimeoutSeconds: original.turnTimeoutSeconds,
+          maxDiscard: original.maxDiscard,
+        });
+        await tx.match.update({
+          where: { id: original.id },
+          data: { rematchMatchId: rematch.id, stateVersion: { increment: 1 } },
+        });
+        await notifyMatchChanged(tx, original.id); // el rival, en la mesa terminada, ve la oferta
+        return { status: 201, body: toMatchResource(rematch, true) };
+      },
+    );
+    return { ...result };
   });
 }

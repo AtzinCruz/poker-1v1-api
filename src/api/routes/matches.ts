@@ -4,7 +4,14 @@ import { ensureMatchListener, subscribeToMatch } from "../../infrastructure/matc
 import { requireAuthenticatedPlayer } from "../auth.js";
 import { requireIdempotencyKey } from "../idempotencyHeader.js";
 import { createMatchSchema, joinMatchSchema } from "../schemas.js";
-import { createMatch, joinMatch, resignMatch, listPendingInvitations, listActiveMatches } from "../../application/matchService.js";
+import {
+  createMatch,
+  joinMatch,
+  resignMatch,
+  requestRematch,
+  listPendingInvitations,
+  listActiveMatches,
+} from "../../application/matchService.js";
 import { getMatchViewForPlayer } from "../../application/handQueryService.js";
 
 /** Por debajo del timeout de inactividad habitual de proxies (30–60 s). */
@@ -67,7 +74,8 @@ export async function matchRoutes(app: FastifyInstance): Promise<void> {
       throw error;
     }
 
-    const live = view.status === "IN_PROGRESS" || view.status === "WAITING_FOR_OPPONENT";
+    // Una partida terminada también espera: así el rival ve al instante una oferta de revancha.
+    const live = view.status !== "CANCELLED";
     if (!live || view.stateVersion > since) {
       wait.cancel();
       return reply.code(200).send(view);
@@ -89,6 +97,15 @@ export async function matchRoutes(app: FastifyInstance): Promise<void> {
     }
     if (clientGone) return reply; // nadie espera la respuesta: no gastar una lectura
     return reply.code(200).send(await getMatchViewForPlayer(matchId, playerId));
+  });
+
+  /** Revancha con las mismas reglas: el primero la crea (201), el segundo la acepta (200). */
+  app.post("/v1/matches/:matchId/rematch", async (request, reply) => {
+    const playerId = await requireAuthenticatedPlayer(request);
+    const idempotencyKey = requireIdempotencyKey(request);
+    const { matchId } = request.params as { matchId: string };
+    const result = await requestRematch({ matchId, playerId, idempotencyKey });
+    return reply.code(result.status).send(result.body);
   });
 
   app.post("/v1/matches/:matchId/resign", async (request, reply) => {

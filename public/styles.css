@@ -1289,3 +1289,35 @@ input[type="range"]:active::-webkit-slider-thumb {
   font-weight: 600;
   white-space: nowrap;
 }
+
+/* ---------- Revancha (mesa terminada) ---------- */
+.rematch {
+  width: 100%;
+  max-width: 420px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--s1);
+  margin-top: var(--s2);
+  padding-top: var(--s4);
+  border-top: 0.5px solid var(--separator);
+}
+
+.rematch-status {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 500;
+}
+
+.rematch-actions {
+  width: 100%;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--s2);
+  margin-top: var(--s3);
+}
+
+.table.is-finished .pot-area,
+.table.is-finished .bet-chip {
+  display: none;
+}

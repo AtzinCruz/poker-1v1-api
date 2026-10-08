@@ -33,6 +33,16 @@ export interface MatchView {
   legalActions: LegalActionView[];
   finishReason?: string | null;
   winnerId?: string | null;
+  /** Solo en partidas terminadas: la revancha pedida desde esta partida, si existe. */
+  rematch?: RematchView | null;
+  rules: { startingStack: number; smallBlind: number; bigBlind: number; turnTimeoutSeconds: number; maxDiscard: number };
+}
+
+export interface RematchView {
+  matchId: string;
+  status: Match["status"];
+  /** true si la pidió quien consulta; false si la pidió el rival (y puede aceptarla). */
+  requestedByYou: boolean;
 }
 
 function legalActionsFor(match: Match, hand: Hand | null, playerId: string, slot: Slot): LegalActionView[] {
@@ -52,7 +62,13 @@ function legalActionsFor(match: Match, hand: Hand | null, playerId: string, slot
   return [];
 }
 
-export function buildMatchView(match: Match, hand: Hand | null, playerId: string, opponentName: string | null = null): MatchView {
+export function buildMatchView(
+  match: Match,
+  hand: Hand | null,
+  playerId: string,
+  opponentName: string | null = null,
+  rematch: Pick<Match, "id" | "status" | "player1Id"> | null = null,
+): MatchView {
   const slot = slotOfPlayer(match, playerId);
   const opponentSlot = otherSlot(slot);
   const opponentId = opponentSlot === "player1" ? match.player1Id : match.player2Id;
@@ -95,15 +111,28 @@ export function buildMatchView(match: Match, hand: Hand | null, playerId: string
     legalActions: legalActionsFor(match, hand, playerId, slot),
     finishReason: match.finishReason,
     winnerId: match.winnerId,
+    rules: {
+      startingStack: match.startingStack,
+      smallBlind: match.smallBlind,
+      bigBlind: match.bigBlind,
+      turnTimeoutSeconds: match.turnTimeoutSeconds,
+      maxDiscard: match.maxDiscard,
+    },
+    rematch:
+      match.status === "MATCH_FINISHED" && rematch
+        ? { matchId: rematch.id, status: rematch.status, requestedByYou: rematch.player1Id === playerId }
+        : null,
   };
 }
 
-/** GET /matches/{id}: resuelve timeouts vencidos y arma la vista filtrada para `playerId`. */
 const PLAYER_NAMES = {
   player1: { select: { displayName: true } },
   player2: { select: { displayName: true } },
+  // Mismo JOIN: la revancha (si la hay) para que la mesa terminada pueda ofrecerla o aceptarla.
+  rematch: { select: { id: true, status: true, player1Id: true } },
 } as const;
 
+/** GET /matches/{id}: resuelve timeouts vencidos y arma la vista filtrada para `playerId`. */
 export async function getMatchViewForPlayer(matchId: string, playerId: string): Promise<MatchView> {
   // Camino rápido (casi todos los polls): lectura consistente con un snapshot, SIN bloquear la partida.
   // RepeatableRead evita ver una mano a medio actualizar respecto a la partida.
@@ -114,7 +143,7 @@ export async function getMatchViewForPlayer(matchId: string, playerId: string): 
       if (!found) {
         throw new DomainError("MATCH_NOT_FOUND", "La partida no existe o no es visible");
       }
-      const { player1, player2, ...match } = found;
+      const { player1, player2, rematch, ...match } = found;
       if (playerId !== match.player1Id && playerId !== match.player2Id) {
         throw new DomainError("NOT_MATCH_PLAYER", "El jugador no pertenece a esta partida");
       }
@@ -122,7 +151,7 @@ export async function getMatchViewForPlayer(matchId: string, playerId: string): 
         ? await tx.hand.findUnique({ where: { matchId_number: { matchId, number: match.handNumber } } })
         : null;
       const opponentName = playerId === match.player1Id ? (player2?.displayName ?? null) : player1.displayName;
-      return { match, hand, opponentName };
+      return { match, hand, opponentName, rematch: rematch ?? null };
     },
     { isolationLevel: "RepeatableRead" },
   );
@@ -132,7 +161,7 @@ export async function getMatchViewForPlayer(matchId: string, playerId: string): 
     snapshot.hand?.turnExpiresAt != null &&
     snapshot.hand.turnExpiresAt.getTime() <= Date.now();
   if (!turnExpired) {
-    return buildMatchView(snapshot.match, snapshot.hand, playerId, snapshot.opponentName);
+    return buildMatchView(snapshot.match, snapshot.hand, playerId, snapshot.opponentName, snapshot.rematch);
   }
 
   // Camino lento: hay un turno vencido que esta lectura debe resolver, así que se serializa igual que

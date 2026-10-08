@@ -95,12 +95,35 @@ describe("long-poll de GET /v1/matches/:id?since=N", () => {
     expect(value.json().stateVersion).toBeGreaterThan(before.stateVersion); // auto-fold aplicado
   });
 
-  it("en una partida terminada responde de inmediato aunque no haya versión nueva", async () => {
-    const { matchId, alice } = await startMatch();
+  it("en una partida terminada espera, y despierta cuando el rival pide la revancha", async () => {
+    const { matchId, alice, bob } = await startMatch();
     await app.inject({ method: "POST", url: `/v1/matches/${matchId}/resign`, headers: authHeaders(alice) });
     const finished = (await view(matchId, alice)).json();
-    const { value, ms } = await timed(() => view(matchId, alice, `?since=${finished.stateVersion}`));
-    expect(value.json().status).toBe("MATCH_FINISHED");
+    expect(finished.status).toBe("MATCH_FINISHED");
+
+    const waiting = timed(() => view(matchId, alice, `?since=${finished.stateVersion}`));
+    await new Promise((r) => setTimeout(r, 300));
+    await app.inject({ method: "POST", url: `/v1/matches/${matchId}/rematch`, headers: authHeaders(bob) });
+    const { value, ms } = await waiting;
+    expect(value.json().rematch).toMatchObject({ status: "WAITING_FOR_OPPONENT", requestedByYou: false });
+    expect(ms).toBeLessThan(3000);
+  });
+
+  it("en una partida cancelada responde de inmediato (no hay nada que esperar)", async () => {
+    const alice = await registerPlayer(app, "alice-cancel-lp");
+    const bob = await registerPlayer(app, "bob-cancel-lp");
+    const created = (
+      await app.inject({
+        method: "POST",
+        url: "/v1/matches",
+        headers: authHeaders(alice),
+        payload: { startingStack: 1000, smallBlind: 10, bigBlind: 20, inviteeId: bob.id },
+      })
+    ).json();
+    await app.inject({ method: "POST", url: `/v1/matches/${created.id}/resign`, headers: authHeaders(alice) });
+    const cancelled = (await view(created.id, alice)).json();
+    const { value, ms } = await timed(() => view(created.id, alice, `?since=${cancelled.stateVersion}`));
+    expect(value.json().status).toBe("CANCELLED");
     expect(ms).toBeLessThan(1000);
   });
 
