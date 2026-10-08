@@ -204,7 +204,13 @@ describe("flujo completo de partida", () => {
     expect(summaries[0].winReason).toBe("FOLD");
     expect(summaries[0].winnerId).toBe(bob.id);
 
+    // Cuentas exactas: Bob gana el pozo de 30 (980 + 30 = 1010) y en la mano 2, que se reparte al
+    // instante, pone la ciega chica (10). Por eso su stack "visible" vuelve a 1000 aunque ganó +10:
+    // hay que sumar lo que ya tiene apostado en la mano nueva.
     const bobView = await getView(matchId, bob);
-    expect(bobView.you.stack).toBeGreaterThan(1000 - 20); // ganó el pozo
+    expect(bobView.handNumber).toBe(2);
+    expect(bobView.you.stack + bobView.you.contribution).toBe(1010);
+    expect(bobView.opponent.stack + bobView.opponent.contribution).toBe(990);
+    expect(bobView.you.stack + bobView.opponent.stack + bobView.pot).toBe(2000); // ninguna ficha se pierde
   });
 });

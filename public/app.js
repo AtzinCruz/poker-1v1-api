@@ -335,6 +335,8 @@ function goToLobby() {
 function lobbyTick() {
   pollInvitations();
   refreshMyMatches();
+  // Si el rival abandona mientras estás aquí, el saldo de arriba debe reflejar lo que ganaste.
+  if (!document.hidden) refreshWallet();
 }
 
 function startInvitationPolling() {
@@ -676,6 +678,18 @@ async function pollOnce(since, generation = pollGeneration) {
   }
 }
 
+/** Fichas que ganó (o perdió) este jugador en la mano: lo que recibió del pozo menos lo que puso. */
+function handNet(audit) {
+  const slot = audit.player1Id === session.player.id ? "player1" : "player2";
+  return (audit.payout[slot] ?? 0) - audit.contributions[slot];
+}
+
+/** "+10", "−20" (signo menos tipográfico), "0". */
+function signed(amount) {
+  const abs = Math.abs(amount).toLocaleString("es");
+  return amount > 0 ? `+${abs}` : amount < 0 ? `−${abs}` : "0";
+}
+
 async function showLastHandResult(handNumber) {
   try {
     const audit = await api("GET", `/v1/matches/${currentMatchId}/hands/${handNumber}`);
@@ -687,8 +701,15 @@ async function showLastHandResult(handNumber) {
     }
 
     // Retiro: no hay showdown ni se revelan cartas (sección 2.3 del spec), solo un aviso breve.
-    const how = audit.winReason === "FORFEIT" ? "por abandono" : "por retiro";
-    showToast(`${youWon ? "Ganaste" : "Perdiste"} ${audit.pot.toLocaleString("es")} fichas ${how}`);
+    // Se informa el NETO: el pozo incluye lo que el propio ganador puso, y la mano siguiente ya
+    // descontó su ciega, así que el stack "no se mueve" aunque haya ganado.
+    const net = handNet(audit);
+    const rival = lastView?.opponent?.displayName || "Tu rival";
+    if (audit.winReason === "FORFEIT") {
+      showToast(youWon ? `${rival} abandonó · ${signed(net)} fichas` : `Abandonaste · ${signed(net)} fichas`);
+    } else {
+      showToast(youWon ? `${rival} se retiró · ${signed(net)} fichas` : `Te retiraste · ${signed(net)} fichas`, 4500);
+    }
   } catch {
     // no crítico
   }
@@ -706,8 +727,11 @@ function showShowdownPopup(audit, handNumber, youWon) {
   (opponentCards || []).forEach((code) => el("showdown-opponent-cards").appendChild(formatCard(code)));
 
   const pot = audit.pot.toLocaleString("es");
+  const net = signed(handNet(audit));
   el("showdown-result").textContent =
-    audit.winReason === "SPLIT" ? `Empate · ${pot} fichas a medias` : `${youWon ? "Ganaste" : "Perdiste"} ${pot} fichas`;
+    audit.winReason === "SPLIT"
+      ? `Empate · pozo de ${pot} a medias (${net})`
+      : `${youWon ? "Ganaste" : "Perdiste"} ${net} fichas · pozo de ${pot}`;
 
   openSheet("showdown-popup", "btn-close-showdown");
   clearTimeout(showdownAutoCloseTimer);
