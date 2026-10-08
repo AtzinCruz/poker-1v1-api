@@ -25,15 +25,19 @@
       <div class="card-panel narrow">
         <h2>Entrar</h2>
         <p class="muted">
-          Esto es un stub de identidad para desarrollo: escribe cualquier nombre y se crea (o
-          recupera) tu jugador.
+          Escribe tu nombre y una contraseña. Si el nombre es nuevo, se crea tu cuenta con esa
+          contraseña; si ya existe, tiene que ser la tuya.
         </p>
         <form id="form-login">
           <label>
             Tu nombre
-            <input id="input-display-name" type="text" maxlength="40" required placeholder="alice" />
+            <input id="input-display-name" type="text" maxlength="40" required placeholder="alice" autocomplete="username" />
           </label>
-          <button type="submit" class="btn btn-primary">Entrar</button>
+          <label>
+            Contraseña (mínimo 8 caracteres)
+            <input id="input-password" type="password" minlength="8" maxlength="72" required autocomplete="current-password" />
+          </label>
+          <button type="submit" class="btn btn-primary">Entrar / Crear cuenta</button>
         </form>
         <p id="auth-error" class="error hidden"></p>
         <p class="muted small" style="text-align: center; margin-top: 16px;">

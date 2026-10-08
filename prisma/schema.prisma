@@ -39,6 +39,9 @@ enum FinishReason {
 model Player {
   id              String   @id @default(cuid())
   displayName     String   @unique
+  // scrypt (ver infrastructure/auth/password.ts). null = cuenta anterior a las contraseñas: la primera
+  // persona que entre con ese nombre fija la contraseña, o un admin puede restablecerla.
+  passwordHash    String?
   fictionalBalance Int     @default(1000)
   blockedBalance  Int      @default(0)
   createdAt       DateTime @default(now())

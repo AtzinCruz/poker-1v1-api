@@ -25,6 +25,7 @@ export function createAdminSession(name: string, secret: string): { token: strin
 export interface AdminPlayerRow {
   id: string;
   displayName: string;
+  hasPassword: boolean;
   fictionalBalance: number;
   blockedBalance: number;
   createdAt: string;
@@ -35,6 +36,7 @@ export async function listAllPlayers(): Promise<AdminPlayerRow[]> {
   return players.map((p) => ({
     id: p.id,
     displayName: p.displayName,
+    hasPassword: p.passwordHash !== null,
     fictionalBalance: p.fictionalBalance,
     blockedBalance: p.blockedBalance,
     createdAt: p.createdAt.toISOString(),
@@ -114,6 +116,40 @@ export async function addPlayerBalance(playerId: string, amount: number, adminNa
     return {
       id: updated.id,
       displayName: updated.displayName,
+      hasPassword: updated.passwordHash !== null,
+      fictionalBalance: updated.fictionalBalance,
+      blockedBalance: updated.blockedBalance,
+      createdAt: updated.createdAt.toISOString(),
+    };
+  });
+}
+
+/**
+ * Borra la contraseña de un jugador (olvidó la suya, o alguien reclamó antes que él una cuenta anterior a
+ * las contraseñas): la próxima persona que entre con ese nombre fija una nueva. Queda registrado.
+ */
+export async function resetPlayerPassword(playerId: string, adminName: string): Promise<AdminPlayerRow> {
+  return prisma.$transaction(async (tx) => {
+    await tx.$queryRaw`SELECT id FROM "Player" WHERE id = ${playerId} FOR UPDATE`;
+    const player = await tx.player.findUnique({ where: { id: playerId } });
+    if (!player) {
+      throw new DomainError("INVALID_ACTION", "El jugador no existe");
+    }
+    const updated = await tx.player.update({ where: { id: playerId }, data: { passwordHash: null } });
+    await tx.adminAction.create({
+      data: {
+        adminName,
+        type: "RESET_PASSWORD",
+        playerId,
+        amount: 0,
+        balanceBefore: player.fictionalBalance,
+        balanceAfter: player.fictionalBalance,
+      },
+    });
+    return {
+      id: updated.id,
+      displayName: updated.displayName,
+      hasPassword: false,
       fictionalBalance: updated.fictionalBalance,
       blockedBalance: updated.blockedBalance,
       createdAt: updated.createdAt.toISOString(),

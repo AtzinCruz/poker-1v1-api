@@ -3,8 +3,10 @@ import { z } from "zod";
 /** El stack inicial debe alcanzar al menos para este número de ciegas grandes. */
 export const MIN_BIG_BLINDS_PER_STACK = 5;
 
-export const devSessionSchema = z.object({
+export const sessionSchema = z.object({
   displayName: z.string().trim().min(1).max(40),
+  // 72 = límite práctico habitual para contraseñas; evita enviar payloads enormes al hash.
+  password: z.string().min(8, "La contraseña debe tener al menos 8 caracteres").max(72),
 });
 
 export const adminSessionSchema = z.object({

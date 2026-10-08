@@ -19,8 +19,9 @@ intenciones de juego.
   polling (`GET /matches/{id}` cada 1.5s) en su lugar. El log de eventos (`GameEvent`) ya está
   pensado para alimentar el WebSocket después sin cambiar el resto del modelo.
 - ⚠️ Identidad: el spec asume un módulo de identidad externo que emite JWT. Como stub de
-  desarrollo, `POST /v1/auth/dev-session` crea el jugador (si no existe) y firma un JWT. **No es
-  un sistema de autenticación real** — reemplázalo por tu IdP antes de exponer esto fuera de un
+  desarrollo, `POST /v1/auth/session` (nombre + contraseña) crea el jugador si no existe y firma un
+  JWT. Las contraseñas se guardan con scrypt y el login admite 10 intentos por minuto por IP. **No es
+  un sistema de identidad real** (sin correo ni recuperación de contraseña: un admin la restablece) — reemplázalo por tu IdP antes de exponer esto fuera de un
   entorno de desarrollo.
 
 ## Stack
@@ -94,8 +95,8 @@ partida" desde el lobby.
 
 ```bash
 # 1. Dos jugadores "inician sesión" (stub de identidad)
-ALICE=$(curl -s -X POST localhost:3000/v1/auth/dev-session -d '{"displayName":"alice"}' -H 'Content-Type: application/json')
-BOB=$(curl -s -X POST localhost:3000/v1/auth/dev-session -d '{"displayName":"bob"}' -H 'Content-Type: application/json')
+ALICE=$(curl -s -X POST localhost:3000/v1/auth/session -d '{"displayName":"alice","password":"contraseña-de-alice"}' -H 'Content-Type: application/json')
+BOB=$(curl -s -X POST localhost:3000/v1/auth/session -d '{"displayName":"bob","password":"contraseña-de-bob-1"}' -H 'Content-Type: application/json')
 ALICE_TOKEN=$(echo $ALICE | jq -r .token)
 BOB_TOKEN=$(echo $BOB | jq -r .token)
 BOB_ID=$(echo $BOB | jq -r .player.id)
@@ -173,5 +174,8 @@ disponibles, y `POST /v1/matches/{id}/actions` con el `actionVersion` correspond
 - **Auditoría**: cada ajuste de saldo del panel de admin queda en la tabla `AdminAction`
   (quién, a quién, monto, saldo antes y después); el saldo no puede superar 2 000 000 000.
 - **Límites**: `bigBlind × 5 ≤ startingStack` al crear la partida.
-- ⚠️ `POST /v1/auth/dev-session` sigue siendo el stub de identidad: **cualquiera puede entrar con
-  cualquier nombre ya existente**. Es aceptable para una demo, no para un despliegue real.
+- **Cuentas y contraseñas**: `POST /v1/auth/session` crea la cuenta con la contraseña la primera vez
+  que se usa un nombre y la verifica después (mismo mensaje de error para "no existe" y "contraseña
+  incorrecta"). Los nombres anteriores a las contraseñas no tienen hash: quien entra primero fija la
+  suya, y un admin puede borrarla desde el panel ("Restablecer") para recuperar una cuenta. No hay
+  recuperación por correo: sigue sin ser un IdP real.

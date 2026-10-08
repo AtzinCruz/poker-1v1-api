@@ -130,6 +130,21 @@ function renderPlayers(players) {
     nameTd.textContent = p.displayName;
     tr.appendChild(nameTd);
 
+    const passwordTd = document.createElement("td");
+    if (p.hasPassword) {
+      const resetBtn = document.createElement("button");
+      resetBtn.type = "button";
+      resetBtn.className = "btn btn-ghost";
+      resetBtn.textContent = "Restablecer";
+      resetBtn.title = "Borra la contraseña: la próxima persona que entre con este nombre fija una nueva";
+      resetBtn.addEventListener("click", () => resetPassword(p));
+      passwordTd.appendChild(resetBtn);
+    } else {
+      passwordTd.textContent = "sin definir";
+      passwordTd.className = "mono";
+    }
+    tr.appendChild(passwordTd);
+
     const availTd = document.createElement("td");
     availTd.textContent = p.fictionalBalance;
     tr.appendChild(availTd);
@@ -160,6 +175,17 @@ function renderPlayers(players) {
     tr.appendChild(actionTd);
 
     tbody.appendChild(tr);
+  }
+}
+
+async function resetPassword(player) {
+  if (!confirm(`¿Restablecer la contraseña de "${player.displayName}"? La próxima persona que entre con ese nombre fijará una nueva.`)) return;
+  hideError("admin-players-error");
+  try {
+    await api("POST", `/v1/admin/players/${player.id}/reset-password`);
+    await loadPlayers();
+  } catch (err) {
+    showError("admin-players-error", err.message);
   }
 }
 

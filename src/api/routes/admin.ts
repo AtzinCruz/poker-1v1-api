@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { requireAdmin } from "../auth.js";
 import { addBalanceSchema } from "../schemas.js";
-import { addPlayerBalance, listAllMatches, listAllPlayers } from "../../application/adminService.js";
+import { addPlayerBalance, listAllMatches, listAllPlayers, resetPlayerPassword } from "../../application/adminService.js";
 
 export async function adminRoutes(app: FastifyInstance): Promise<void> {
   app.get("/v1/admin/players", async (request, reply) => {
@@ -21,6 +21,13 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
     const { playerId } = request.params as { playerId: string };
     const body = addBalanceSchema.parse(request.body);
     const player = await addPlayerBalance(playerId, body.amount, adminName);
+    return reply.code(200).send(player);
+  });
+
+  app.post("/v1/admin/players/:playerId/reset-password", async (request, reply) => {
+    const adminName = requireAdmin(request);
+    const { playerId } = request.params as { playerId: string };
+    const player = await resetPlayerPassword(playerId, adminName);
     return reply.code(200).send(player);
   });
 }

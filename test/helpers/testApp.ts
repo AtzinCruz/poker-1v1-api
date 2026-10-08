@@ -8,6 +8,8 @@ export async function createTestApp(): Promise<FastifyInstance> {
   return app;
 }
 
+export const TEST_PASSWORD = "contraseña-de-prueba-123";
+
 export interface TestPlayer {
   token: string;
   id: string;
@@ -17,8 +19,8 @@ export interface TestPlayer {
 export async function registerPlayer(app: FastifyInstance, displayName: string): Promise<TestPlayer> {
   const res = await app.inject({
     method: "POST",
-    url: "/v1/auth/dev-session",
-    payload: { displayName },
+    url: "/v1/auth/session",
+    payload: { displayName, password: TEST_PASSWORD },
   });
   const body = res.json();
   return { token: body.token, id: body.player.id, displayName: body.player.displayName };

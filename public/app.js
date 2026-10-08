@@ -89,7 +89,7 @@ async function api(method, path, { body, idempotent = false } = {}) {
   const parsed = text ? JSON.parse(text) : null;
 
   if (!res.ok) {
-    if (res.status === 401 && session?.token && path !== "/v1/auth/dev-session") {
+    if (res.status === 401 && session?.token && path !== "/v1/auth/session") {
       expireSession();
     }
     throw new ApiError(res.status, parsed);
@@ -142,9 +142,11 @@ el("form-login").addEventListener("submit", async (evt) => {
   evt.preventDefault();
   hideError("auth-error");
   const displayName = el("input-display-name").value.trim();
-  if (!displayName) return;
+  const password = el("input-password").value;
+  if (!displayName || !password) return;
   try {
-    const result = await api("POST", "/v1/auth/dev-session", { body: { displayName } });
+    const result = await api("POST", "/v1/auth/session", { body: { displayName, password } });
+    el("input-password").value = "";
     saveSession(result);
     afterLogin();
   } catch (err) {
