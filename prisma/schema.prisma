@@ -90,6 +90,10 @@ model Match {
 
   @@index([player1Id])
   @@index([player2Id])
+  // GET /v1/invitations (cada 3 s por jugador en el lobby) filtra por invitado y estado.
+  @@index([inviteeId, status])
+  // expireStaleInvitations: WAITING_FOR_OPPONENT más viejas que el TTL.
+  @@index([status, createdAt])
 }
 
 model Hand {
@@ -148,6 +152,8 @@ model Hand {
   events  GameEvent[]
 
   @@unique([matchId, number])
+  // sweepExpiredTurns: turnos vencidos. finishHand lo deja en NULL, así que solo las manos vivas tienen valor.
+  @@index([turnExpiresAt])
 }
 
 model Action {
@@ -197,6 +203,8 @@ model IdempotencyRecord {
   createdAt      DateTime @default(now())
 
   @@unique([playerId, key])
+  // Purga por antigüedad (maintenance.ts).
+  @@index([createdAt])
 }
 
 // Registro de cada ajuste manual de saldo hecho desde el panel de administración.
