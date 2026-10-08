@@ -6,6 +6,7 @@ import fastifyStatic from "@fastify/static";
 import { ZodError } from "zod";
 import { DomainError } from "../domain/errors.js";
 import { statusForCode, toProblemJson } from "./errors.js";
+import { registerSecurityHeaders } from "./securityHeaders.js";
 import { authRoutes } from "./routes/auth.js";
 import { matchRoutes } from "./routes/matches.js";
 import { actionRoutes } from "./routes/actions.js";
@@ -18,6 +19,8 @@ export async function buildServer(options: { logger?: boolean } = {}) {
   // proxy añadió al final de X-Forwarded-For. Con `true` se confiaba en toda la cadena y el cliente
   // podía fabricar una IP distinta por request para esquivar los límites de tasa.
   const app = Fastify({ logger: options.logger ?? true, trustProxy: (_address: string, hop: number) => hop < 1 });
+
+  registerSecurityHeaders(app);
 
   await app.register(rateLimit, {
     max: 300,

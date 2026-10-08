@@ -40,7 +40,11 @@ export async function loginOrRegister(displayName: string, password: string): Pr
       player = await prisma.player.findUnique({ where: { displayName } });
       if (!player?.passwordHash || !(await verifyPassword(password, player.passwordHash))) throw BAD_CREDENTIALS();
     }
-  } else if (!player.passwordHash || !(await verifyPassword(password, player.passwordHash))) {
+  } else if (!player.passwordHash) {
+    // Cuenta sin contraseña: se calcula un hash igual para que el tiempo de respuesta no la delate.
+    await hashPassword(password);
+    throw BAD_CREDENTIALS();
+  } else if (!(await verifyPassword(password, player.passwordHash))) {
     throw BAD_CREDENTIALS();
   }
 

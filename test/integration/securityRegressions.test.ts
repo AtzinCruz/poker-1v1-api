@@ -7,7 +7,7 @@ import { resetDatabase } from "../helpers/db.js";
 import { prisma } from "../../src/infrastructure/prisma/client.js";
 import { dealNewHand } from "../../src/application/dealing.js";
 import { expireStaleInvitations, sweepExpiredTurns } from "../../src/application/maintenance.js";
-import { MAX_FICTIONAL_BALANCE } from "../../src/application/adminService.js";
+import { MAX_FICTIONAL_BALANCE, generateTemporaryPassword } from "../../src/application/adminService.js";
 
 let app: FastifyInstance;
 
@@ -451,5 +451,50 @@ describe("auditoría de saldo del admin", () => {
     });
     expect(overflow.statusCode).toBe(400);
     expect(await prisma.adminAction.count({ where: { playerId: alice.id } })).toBe(1);
+  });
+});
+
+describe("cabeceras de seguridad", () => {
+  it("toda respuesta lleva CSP estricta y las cabeceras anti-clickjacking / sniffing", async () => {
+    for (const url of ["/", "/health", "/v1/wallet"]) {
+      const res = await app.inject({ method: "GET", url });
+      expect(res.headers["content-security-policy"]).toContain("script-src 'self'");
+      expect(res.headers["content-security-policy"]).toContain("frame-ancestors 'none'");
+      expect(res.headers["content-security-policy"]).not.toContain("unsafe-inline");
+      expect(res.headers["x-content-type-options"]).toBe("nosniff");
+      expect(res.headers["x-frame-options"]).toBe("DENY");
+      expect(res.headers["referrer-policy"]).toBe("no-referrer");
+    }
+  });
+
+  it("las respuestas de la API no se cachean (llevan tokens, cartas y saldos)", async () => {
+    const res = await app.inject({
+      method: "POST",
+      url: "/v1/auth/session",
+      payload: { displayName: "alice-cache", password: "una-contraseña-larga" },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.headers["cache-control"]).toBe("no-store");
+  });
+
+  it("el cliente web no usa estilos ni scripts en línea (la CSP los bloquearía)", async () => {
+    for (const url of ["/", "/admin.html"]) {
+      const html = (await app.inject({ method: "GET", url })).body;
+      expect(html).not.toMatch(/ style="/);
+      expect(html).not.toMatch(/<script(?![^>]*\bsrc=)/);
+      expect(html).not.toMatch(/ on[a-z]+="/);
+    }
+  });
+});
+
+describe("contraseña temporal del admin", () => {
+  it("usa el alfabeto legible, tiene el formato esperado y no se repite", () => {
+    const seen = new Set<string>();
+    for (let i = 0; i < 200; i++) {
+      const pwd = generateTemporaryPassword();
+      expect(pwd).toMatch(/^[a-hjkmnp-z2-9]{5}-[a-hjkmnp-z2-9]{5}-[a-hjkmnp-z2-9]{4}$/);
+      seen.add(pwd);
+    }
+    expect(seen.size).toBe(200);
   });
 });

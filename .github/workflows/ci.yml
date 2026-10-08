@@ -1,0 +1,65 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Mínimo privilegio: el pipeline solo lee el repo; ningún paso necesita escribir ni usar el GITHUB_TOKEN.
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: poker
+          POSTGRES_PASSWORD: poker
+          POSTGRES_DB: poker_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U poker"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      # Credenciales efímeras del contenedor de CI: no son secretos reales.
+      DATABASE_URL: postgresql://poker:poker@localhost:5432/poker_test?schema=public
+      TEST_DATABASE_URL: postgresql://poker:poker@localhost:5432/poker_test?schema=public
+      JWT_SECRET: ci-only-jwt-secret-not-used-anywhere-else
+      ADMIN_SECRET: ci-only-admin-secret
+      NODE_ENV: test
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      # npm ci: instala exactamente lo que fija package-lock.json (falla si el lock no coincide).
+      - run: npm ci
+
+      # Solo dependencias de producción, y solo high/critical: las de desarrollo no llegan al despliegue.
+      - name: Auditoría de dependencias
+        run: npm audit --omit=dev --audit-level=high
+
+      - run: npx prisma migrate deploy
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build

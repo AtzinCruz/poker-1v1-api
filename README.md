@@ -185,3 +185,10 @@ disponibles, y `POST /v1/matches/{id}/actions` con el `actionVersion` correspond
 - **Detrás de un proxy**: `trustProxy` confía en **exactamente un** salto. Si hay dos proxies delante
   (CDN + balanceador) `request.ip` será la IP del primero; si no hay ninguno, hay que desactivarlo. Los
   límites por IP (login, admin) dependen de que esto sea correcto.
+- **Cabeceras HTTP** (`src/api/securityHeaders.ts`): CSP estricta (`'self'`, sin `unsafe-inline`; el
+  cliente no puede tener `<script>` ni `style=""` en línea), `X-Frame-Options: DENY`, `nosniff`,
+  `Referrer-Policy: no-referrer`, COOP/CORP `same-origin`, HSTS y `Cache-Control: no-store` en `/v1/*`.
+- **CI** (`.github/workflows/ci.yml`): en cada push a `main` y en cada PR corre `npm ci`,
+  `npm audit --omit=dev --audit-level=high`, migraciones, lint, typecheck, toda la suite contra un
+  Postgres efímero y el build. Dependabot (`.github/dependabot.yml`) propone actualizaciones semanales
+  de npm y de las GitHub Actions.

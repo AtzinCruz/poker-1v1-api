@@ -1,4 +1,4 @@
-import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
+import { createHash, randomInt, timingSafeEqual } from "node:crypto";
 import { prisma } from "../infrastructure/prisma/client.js";
 import { signAdminToken } from "../infrastructure/auth/jwt.js";
 import { hashPassword } from "../infrastructure/auth/password.js";
@@ -125,12 +125,14 @@ export async function addPlayerBalance(playerId: string, amount: number, adminNa
   });
 }
 
-/** Contraseña temporal legible (sin 0/O/1/l/I), ~70 bits de entropía. */
+/**
+ * Contraseña temporal legible (sin 0/O/1/l/I), ~69 bits de entropía. `randomInt` es uniforme; con
+ * `byte % 31` los primeros 8 caracteres del alfabeto salían más seguido (256 no es múltiplo de 31).
+ */
 export function generateTemporaryPassword(): string {
   const alphabet = "abcdefghjkmnpqrstuvwxyz23456789";
-  const bytes = randomBytes(14);
   let out = "";
-  for (let i = 0; i < 14; i++) out += alphabet[bytes[i]! % alphabet.length];
+  for (let i = 0; i < 14; i++) out += alphabet[randomInt(alphabet.length)];
   return `${out.slice(0, 5)}-${out.slice(5, 10)}-${out.slice(10)}`;
 }
 

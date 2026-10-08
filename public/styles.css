@@ -37,6 +37,16 @@ body {
   font-size: 0.8em;
 }
 
+/* Clase en vez de style="" en línea: la CSP (style-src 'self') bloquea los estilos en línea. */
+.admin-link {
+  text-align: center;
+  margin-top: 16px;
+}
+
+.admin-link a {
+  color: inherit;
+}
+
 .topbar {
   display: flex;
   justify-content: space-between;
