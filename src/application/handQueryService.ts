@@ -21,7 +21,14 @@ export interface MatchView {
   stateVersion: number;
   pot: number;
   you: { playerId: string; stack: number; cards: string[]; contribution: number };
-  opponent: { playerId: string; stack: number; cardCount: number; cards?: string[]; contribution: number } | null;
+  opponent: {
+    playerId: string;
+    displayName: string | null;
+    stack: number;
+    cardCount: number;
+    cards?: string[];
+    contribution: number;
+  } | null;
   turn: { playerId: string; expiresAt: string } | null;
   legalActions: LegalActionView[];
   finishReason?: string | null;
@@ -45,7 +52,7 @@ function legalActionsFor(match: Match, hand: Hand | null, playerId: string, slot
   return [];
 }
 
-export function buildMatchView(match: Match, hand: Hand | null, playerId: string): MatchView {
+export function buildMatchView(match: Match, hand: Hand | null, playerId: string, opponentName: string | null = null): MatchView {
   const slot = slotOfPlayer(match, playerId);
   const opponentSlot = otherSlot(slot);
   const opponentId = opponentSlot === "player1" ? match.player1Id : match.player2Id;
@@ -77,6 +84,7 @@ export function buildMatchView(match: Match, hand: Hand | null, playerId: string
     opponent: opponentId
       ? {
           playerId: opponentId,
+          displayName: opponentName,
           stack: opponentStack,
           cardCount: opponentView?.cards.length ?? 0,
           ...(showdownRevealed ? { cards: opponentView?.cards ?? [] } : {}),
@@ -91,22 +99,30 @@ export function buildMatchView(match: Match, hand: Hand | null, playerId: string
 }
 
 /** GET /matches/{id}: resuelve timeouts vencidos y arma la vista filtrada para `playerId`. */
+const PLAYER_NAMES = {
+  player1: { select: { displayName: true } },
+  player2: { select: { displayName: true } },
+} as const;
+
 export async function getMatchViewForPlayer(matchId: string, playerId: string): Promise<MatchView> {
   // Camino rápido (casi todos los polls): lectura consistente con un snapshot, SIN bloquear la partida.
   // RepeatableRead evita ver una mano a medio actualizar respecto a la partida.
   const snapshot = await prisma.$transaction(
     async (tx) => {
-      const match = await tx.match.findUnique({ where: { id: matchId } });
-      if (!match) {
+      // Los nombres vienen en la misma consulta (JOIN): mostrar al rival no agrega idas y vueltas.
+      const found = await tx.match.findUnique({ where: { id: matchId }, include: PLAYER_NAMES });
+      if (!found) {
         throw new DomainError("MATCH_NOT_FOUND", "La partida no existe o no es visible");
       }
+      const { player1, player2, ...match } = found;
       if (playerId !== match.player1Id && playerId !== match.player2Id) {
         throw new DomainError("NOT_MATCH_PLAYER", "El jugador no pertenece a esta partida");
       }
       const hand = match.handNumber > 0
         ? await tx.hand.findUnique({ where: { matchId_number: { matchId, number: match.handNumber } } })
         : null;
-      return { match, hand };
+      const opponentName = playerId === match.player1Id ? (player2?.displayName ?? null) : player1.displayName;
+      return { match, hand, opponentName };
     },
     { isolationLevel: "RepeatableRead" },
   );
@@ -116,7 +132,7 @@ export async function getMatchViewForPlayer(matchId: string, playerId: string): 
     snapshot.hand?.turnExpiresAt != null &&
     snapshot.hand.turnExpiresAt.getTime() <= Date.now();
   if (!turnExpired) {
-    return buildMatchView(snapshot.match, snapshot.hand, playerId);
+    return buildMatchView(snapshot.match, snapshot.hand, playerId, snapshot.opponentName);
   }
 
   // Camino lento: hay un turno vencido que esta lectura debe resolver, así que se serializa igual que
@@ -128,7 +144,8 @@ export async function getMatchViewForPlayer(matchId: string, playerId: string): 
       ? await tx.hand.findUnique({ where: { matchId_number: { matchId, number: match.handNumber } } })
       : null;
     const resolved = await resolveExpiredTurns(tx, match, hand);
-    return buildMatchView(resolved.match, resolved.hand, playerId);
+    // Los nombres no cambian y este camino solo ocurre con la partida en curso (rival ya asignado).
+    return buildMatchView(resolved.match, resolved.hand, playerId, snapshot.opponentName);
   });
 }
 

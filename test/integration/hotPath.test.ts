@@ -93,3 +93,34 @@ describe("caché de tokenVersion", () => {
     expect((await app.inject({ method: "GET", url: "/v1/wallet", headers: fresh })).statusCode).toBe(200);
   });
 });
+
+describe("nombre del rival en la vista", () => {
+  it("cada jugador ve el nombre del otro, también cuando la lectura resuelve un turno vencido", async () => {
+    const alice = await registerPlayer(app, "alice-name");
+    const bob = await registerPlayer(app, "bob-name");
+    const created = await createMatch(alice, bob);
+
+    const waiting = (await app.inject({ method: "GET", url: `/v1/matches/${created.id}`, headers: authHeaders(alice) })).json();
+    expect(waiting.opponent).toBeNull(); // todavía no se unió
+
+    await app.inject({
+      method: "POST",
+      url: `/v1/matches/${created.id}/join`,
+      headers: authHeaders(bob),
+      payload: { joinToken: created.joinToken },
+    });
+    const forAlice = (await app.inject({ method: "GET", url: `/v1/matches/${created.id}`, headers: authHeaders(alice) })).json();
+    const forBob = (await app.inject({ method: "GET", url: `/v1/matches/${created.id}`, headers: authHeaders(bob) })).json();
+    expect(forAlice.opponent.displayName).toBe("bob-name");
+    expect(forBob.opponent.displayName).toBe("alice-name");
+
+    // Camino lento (turno vencido → lock + resolución): el nombre sigue presente.
+    await prisma.hand.updateMany({
+      where: { matchId: created.id, phase: { not: "HAND_FINISHED" } },
+      data: { turnExpiresAt: new Date(Date.now() - 1000) },
+    });
+    const afterTimeout = (await app.inject({ method: "GET", url: `/v1/matches/${created.id}`, headers: authHeaders(bob) })).json();
+    expect(afterTimeout.handNumber).toBe(2);
+    expect(afterTimeout.opponent.displayName).toBe("alice-name");
+  });
+});

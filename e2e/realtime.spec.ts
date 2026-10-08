@@ -22,7 +22,7 @@ async function setHidden(page: Page, hidden: boolean) {
 test("la jugada del rival aparece al instante (long-poll, no un intervalo de 1.5 s)", async ({ browser }) => {
   const { ana, beto } = await startMatch(browser);
   // Ana es el botón y actúa primero; Beto espera su turno con un long-poll abierto.
-  await expect(beto.locator("#turn-indicator")).toHaveText("Turno del rival");
+  await expect(beto.locator("#turn-indicator")).toHaveText(/^Turno de ana-/);
   await beto.waitForTimeout(500);
 
   const started = Date.now();

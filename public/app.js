@@ -676,6 +676,11 @@ function renderTable(view) {
   el("you-stack").textContent = waiting ? "–" : view.you.stack.toLocaleString("es");
   setBetChip("you", view.you.contribution);
 
+  const opponentName = view.opponent?.displayName || "Rival";
+  el("opponent-name").textContent = opponentName;
+  el("opponent-panel").setAttribute("aria-label", opponentName);
+  el("showdown-opponent-name").textContent = opponentName;
+
   if (view.opponent) {
     el("opponent-stack").textContent = view.opponent.stack.toLocaleString("es");
     setBetChip("opponent", view.opponent.contribution);
@@ -696,7 +701,7 @@ function renderTable(view) {
   const isYourTurn = Boolean(view.turn && view.turn.playerId === session.player.id);
   el("you-panel").classList.toggle("active-turn", isYourTurn);
   el("opponent-panel").classList.toggle("active-turn", Boolean(view.turn && !isYourTurn));
-  el("turn-indicator").textContent = view.turn ? (isYourTurn ? "Tu turno" : "Turno del rival") : "";
+  el("turn-indicator").textContent = view.turn ? (isYourTurn ? "Tu turno" : `Turno de ${opponentName}`) : "";
 
   renderActionPanel(view, isYourTurn);
   renderCountdown();
