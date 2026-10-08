@@ -197,3 +197,8 @@ disponibles, y `POST /v1/matches/{id}/actions` con el `actionVersion` correspond
   `503` si no llega — es el que debe usar el health check del despliegue. Si la BD cae a mitad de una
   petición (P1001, pool agotado P2024, etc.) la API responde `503 SERVICE_UNAVAILABLE` con
   `Retry-After: 2`, no un `500` genérico.
+- **Compresión**: el cliente estático se sirve con br/gzip (`app.js` 29 KB → ~7 KB). Las respuestas
+  de `/v1/*` nunca se comprimen: pesan menos de 1 KB y algunas combinan un secreto (el JWT) con
+  texto del usuario, lo que explotan ataques tipo BREACH.
+- **Ajustes de producción**: `connection_limit`/`pool_timeout` en `DATABASE_URL` y
+  `UV_THREADPOOL_SIZE` (= vCPU) — ver `.env.example`.

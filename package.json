@@ -23,6 +23,7 @@
     "test:e2e": "playwright test"
   },
   "dependencies": {
+    "@fastify/compress": "^9.2.0",
     "@fastify/rate-limit": "^10.2.1",
     "@fastify/static": "^10.1.4",
     "@prisma/client": "^5.22.0",

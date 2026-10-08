@@ -3,6 +3,7 @@ import { dirname, join } from "node:path";
 import Fastify, { type FastifyError } from "fastify";
 import { Prisma } from "@prisma/client";
 import rateLimit from "@fastify/rate-limit";
+import compress from "@fastify/compress";
 import fastifyStatic from "@fastify/static";
 import { ZodError } from "zod";
 import { DomainError } from "../domain/errors.js";
@@ -52,6 +53,14 @@ export async function buildServer(options: { logger?: boolean } = {}) {
   const app = Fastify({ logger: options.logger ?? true, trustProxy: (_address: string, hop: number) => hop < 1 });
 
   registerSecurityHeaders(app);
+
+  // Compresión solo para el cliente estático (app.js 29 KB -> ~7 KB con br). Las respuestas de la API
+  // quedan fuera: pesan <1 KB y algunas mezclan un secreto (el JWT del login) con texto que controla
+  // el usuario (displayName), la combinación que explotan ataques tipo BREACH.
+  app.addHook("onRoute", (route) => {
+    if (route.url.startsWith("/v1/")) route.compress = false;
+  });
+  await app.register(compress, { encodings: ["br", "gzip"], threshold: 1024 });
 
   await app.register(rateLimit, {
     max: 300,

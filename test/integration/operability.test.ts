@@ -73,3 +73,32 @@ describe("errores de infraestructura", () => {
     expect(res.statusCode).toBe(500);
   });
 });
+
+describe("compresión", () => {
+  it.each([
+    ["br", "br"],
+    ["gzip", "gzip"],
+  ])("el cliente estático se sirve comprimido con %s", async (accept, expected) => {
+    app = await buildServer({ logger: false });
+    const plain = await app.inject({ method: "GET", url: "/app.js" });
+    const res = await app.inject({ method: "GET", url: "/app.js", headers: { "accept-encoding": accept } });
+    expect(res.statusCode).toBe(200);
+    expect(res.headers["content-encoding"]).toBe(expected);
+    expect(res.rawPayload.length).toBeLessThan(plain.rawPayload.length / 2);
+  });
+
+  it("las respuestas de la API nunca se comprimen, aunque sean grandes (mitigación tipo BREACH)", async () => {
+    app = await buildServer({ logger: false });
+    const big = { filler: "x".repeat(5000) };
+    app.get("/v1/__big", async () => big);
+    app.get("/__big", async () => big);
+    const headers = { "accept-encoding": "br, gzip" };
+
+    const api = await app.inject({ method: "GET", url: "/v1/__big", headers });
+    expect(api.headers["content-encoding"]).toBeUndefined();
+    expect(api.json()).toEqual(big);
+
+    const other = await app.inject({ method: "GET", url: "/__big", headers });
+    expect(other.headers["content-encoding"]).toBe("br"); // control: la exclusión es por prefijo /v1/
+  });
+});
