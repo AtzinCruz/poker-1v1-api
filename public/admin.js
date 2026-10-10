@@ -43,10 +43,11 @@ class ApiError extends Error {
   }
 }
 
-async function api(method, path, { body } = {}) {
+async function api(method, path, { body, idempotencyKey } = {}) {
   const headers = {};
   if (body !== undefined) headers["Content-Type"] = "application/json";
   if (adminSession?.token) headers.Authorization = `Bearer ${adminSession.token}`;
+  if (idempotencyKey) headers["Idempotency-Key"] = idempotencyKey;
 
   const res = await fetch(path, { method, headers, body: body !== undefined ? JSON.stringify(body) : undefined });
   const text = await res.text();
@@ -194,6 +195,12 @@ async function resetPassword(player) {
   }
 }
 
+/**
+ * Una clave por intención (jugador + monto): un doble clic o el reintento tras un corte de red la
+ * reusan y el servidor acredita una sola vez. Se descarta cuando el servidor respondió.
+ */
+const pendingCreditKeys = new Map();
+
 async function addBalance(playerId, input) {
   hideError("admin-players-error");
   const amount = Number(input.value);
@@ -201,11 +208,18 @@ async function addBalance(playerId, input) {
     showError("admin-players-error", "Ingresá un monto entero positivo.");
     return;
   }
+  const intent = `${playerId}:${amount}`;
+  if (!pendingCreditKeys.has(intent)) pendingCreditKeys.set(intent, crypto.randomUUID());
   try {
-    await api("POST", `/v1/admin/players/${playerId}/add-balance`, { body: { amount } });
+    await api("POST", `/v1/admin/players/${playerId}/add-balance`, {
+      body: { amount },
+      idempotencyKey: pendingCreditKeys.get(intent),
+    });
+    pendingCreditKeys.delete(intent);
     input.value = "";
     await loadPlayers();
   } catch (err) {
+    if (err instanceof ApiError) pendingCreditKeys.delete(intent); // respondió: la próxima es otra intención
     showError("admin-players-error", err.message);
   }
 }

@@ -36,6 +36,7 @@ enum FinishReason {
   DISCONNECT_TIMEOUT
 }
 
+// Saldos con CHECK >= 0 en la BD (migración audit_fixes): Prisma no modela restricciones CHECK.
 model Player {
   id              String   @id @default(cuid())
   displayName     String   @unique
@@ -62,6 +63,10 @@ model Match {
   bigBlind           Int
   turnTimeoutSeconds Int         @default(60)
   maxDiscard         Int         @default(5)
+  // Ciegas incrementales: cada blindLevelHands manos ambas ciegas suben blindIncrement (0 = fijas).
+  // smallBlind/bigBlind son las del primer nivel (domain/blinds.ts calcula las de cada mano).
+  blindIncrement     Int         @default(0)
+  blindLevelHands    Int         @default(3)
 
   player1Id String
   player1   Player @relation("MatchPlayer1", fields: [player1Id], references: [id])
@@ -134,6 +139,9 @@ model Hand {
 
   player1Discarded    Boolean @default(false)
   player2Discarded    Boolean @default(false)
+  // Cuántas cartas cambió cada uno (público: §7 draw.completed.discardedCount). null hasta su draw.
+  player1DiscardedCount Int?
+  player2DiscardedCount Int?
   player1Folded       Boolean @default(false)
   player2Folded       Boolean @default(false)
   player1AllIn        Boolean @default(false)
@@ -143,6 +151,8 @@ model Hand {
 
   toActPlayerId String?
   turnExpiresAt DateTime?
+  // La mano terminó por un fold automático (turno vencido), no por uno voluntario.
+  foldedByTimeout Boolean @default(false)
 
   // winnerId es null cuando winReason = SPLIT (empate total, se reparte el pozo).
   winnerId       String?
@@ -174,7 +184,10 @@ model Action {
   discardedIndexes Int[]      @default([])
   actionVersion    Int
   isAuto           Boolean    @default(false)
+  // Idempotency-Key de la petición que la originó (null en las automáticas).
   idempotencyKey   String?
+  // Estado de la partida justo después de aplicarla (stateVersion, fase, pozo, stacks).
+  stateAfter       Json?
   createdAt        DateTime   @default(now())
 
   @@index([handId])

@@ -3,7 +3,7 @@ import type { FastifyInstance } from "fastify";
 import { createTestApp, registerPlayer, authHeaders, type TestPlayer } from "../helpers/testApp.js";
 import { resetDatabase } from "../helpers/db.js";
 import { prisma } from "../../src/infrastructure/prisma/client.js";
-import { purgeIdempotencyRecords, sweepExpiredTurns } from "../../src/application/maintenance.js";
+import { purgeAdminActions, purgeIdempotencyRecords, purgeOldMatches, sweepExpiredTurns } from "../../src/application/maintenance.js";
 
 let app: FastifyInstance;
 
@@ -106,5 +106,40 @@ describe("purga de idempotencia", () => {
     expect(await purgeIdempotencyRecords()).toBe(5003);
     const remaining = await prisma.idempotencyRecord.findMany({ where: { playerId: alice.id } });
     expect(remaining.map((r) => r.key).sort()).toEqual(["new-0", "new-1", "new-2"]);
+  });
+});
+
+describe("purga de datos viejos (AUD-19)", () => {
+  it("borra partidas terminadas hace más de la retención con sus manos, acciones y eventos; deja las recientes", async () => {
+    const alice = await registerPlayer(app, "alice-purge");
+    const bob = await registerPlayer(app, "bob-purge");
+    await prisma.player.updateMany({ where: { id: { in: [alice.id, bob.id] } }, data: { fictionalBalance: 10_000 } });
+    const oldMatch = await startMatch(alice, bob);
+    await app.inject({ method: "POST", url: `/v1/matches/${oldMatch}/resign`, headers: authHeaders(bob) });
+    const recent = await startMatch(alice, bob);
+    await app.inject({ method: "POST", url: `/v1/matches/${recent}/resign`, headers: authHeaders(bob) });
+    const live = await startMatch(alice, bob);
+    // Una partida que se queda apunta (como revancha) a la que se borra: el vínculo se suelta.
+    await prisma.match.update({ where: { id: recent }, data: { rematchMatchId: oldMatch } });
+    await prisma.match.update({ where: { id: oldMatch }, data: { createdAt: new Date(Date.now() - 200 * 24 * 3600 * 1000) } });
+
+    expect(await purgeOldMatches(180 * 24 * 3600 * 1000)).toBe(1);
+    expect(await prisma.match.findUnique({ where: { id: oldMatch } })).toBeNull();
+    expect(await prisma.hand.count({ where: { matchId: oldMatch } })).toBe(0);
+    expect(await prisma.action.count({ where: { matchId: oldMatch } })).toBe(0);
+    expect(await prisma.gameEvent.count({ where: { matchId: oldMatch } })).toBe(0);
+    expect((await prisma.match.findUniqueOrThrow({ where: { id: recent } })).rematchMatchId).toBeNull();
+    expect(await prisma.match.count({ where: { id: { in: [recent, live] } } })).toBe(2);
+    expect(await purgeOldMatches(0)).toBe(0); // 0 = no purgar nunca
+  });
+
+  it("borra los registros de admin más viejos que su retención", async () => {
+    const alice = await registerPlayer(app, "alice-purge-admin");
+    await prisma.adminAction.create({
+      data: { adminName: "x", type: "ADD_BALANCE", playerId: alice.id, amount: 1, balanceBefore: 0, balanceAfter: 1, createdAt: new Date(Date.now() - 800 * 24 * 3600 * 1000) },
+    });
+    await prisma.adminAction.create({ data: { adminName: "x", type: "ADD_BALANCE", playerId: alice.id, amount: 1, balanceBefore: 1, balanceAfter: 2 } });
+    expect(await purgeAdminActions(730 * 24 * 3600 * 1000)).toBe(1);
+    expect(await prisma.adminAction.count()).toBe(1);
   });
 });

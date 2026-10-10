@@ -4,7 +4,7 @@ import { persistBettingRoundResult, toEngineState } from "./bettingRound.js";
 import { applyDraw, bumpStateVersion } from "./drawPhase.js";
 import { advanceAfterBettingRoundClosed, advanceAfterDraw, advanceAfterFold } from "./handFlow.js";
 import { finishMatchByForfeit } from "./forfeit.js";
-import { logEvent } from "./events.js";
+import { recordAction } from "./actionLog.js";
 import { slotOfPlayer } from "./seats.js";
 import { notifyMatchChanged } from "../infrastructure/matchNotifier.js";
 
@@ -67,32 +67,22 @@ export async function resolveExpiredTurns(
 
     const actorId = currentHand.toActPlayerId;
     const actorSlot = slotOfPlayer(currentMatch, actorId);
+    // Cada acción automática queda registrada como cualquier otra (AUD-10): estado anterior y posterior.
+    const record = {
+      handId: currentHand.id,
+      matchId: currentMatch.id,
+      playerId: actorId,
+      actionVersion: currentMatch.stateVersion,
+      isAuto: true,
+    };
 
     if (currentHand.phase === "DRAW") {
-      const updatedHand = await applyDraw(tx, currentMatch, currentHand, actorSlot, []);
-      await logEvent(tx, {
-        matchId: currentMatch.id,
-        handId: currentHand.id,
-        type: "draw.completed",
-        stateVersion: currentMatch.stateVersion,
-        publicPayload: { playerId: actorId, discardedCount: 0, auto: true },
-      });
-      await tx.action.create({
-        data: {
-          handId: currentHand.id,
-          matchId: currentMatch.id,
-          playerId: actorId,
-          type: "DRAW",
-          discardedIndexes: [],
-          actionVersion: currentMatch.stateVersion,
-          isAuto: true,
-        },
-      });
-
+      const updatedHand = await applyDraw(tx, currentMatch, currentHand, actorSlot, [], { auto: true });
       currentMatch = await bumpStateVersion(tx, currentMatch);
       const advancedDraw = await advanceAfterDraw(tx, currentMatch, updatedHand, actorSlot);
       currentMatch = advancedDraw.match;
       currentHand = advancedDraw.hand;
+      await recordAction(tx, { ...record, type: "DRAW", discardedIndexes: [] }, { match: currentMatch, hand: currentHand });
     } else {
       // Fases de apuestas: check si es legal, si no fold.
       const engineState = toEngineState(currentMatch, currentHand);
@@ -101,18 +91,7 @@ export async function resolveExpiredTurns(
 
       if (toCall <= 0) {
         const result = applyCheckOrBet(engineState, seat, 0);
-        const persisted = await persistBettingRoundResult(tx, currentMatch, currentHand, result);
-        await tx.action.create({
-          data: {
-            handId: currentHand.id,
-            matchId: currentMatch.id,
-            playerId: actorId,
-            type: "BET",
-            amount: 0,
-            actionVersion: currentMatch.stateVersion,
-            isAuto: true,
-          },
-        });
+        const persisted = await persistBettingRoundResult(tx, currentMatch, currentHand, result, actorId);
         currentMatch = persisted.match;
         currentHand = persisted.hand;
         if (result.closed) {
@@ -120,20 +99,12 @@ export async function resolveExpiredTurns(
           currentMatch = advanced.match;
           currentHand = advanced.hand;
         }
+        await recordAction(tx, { ...record, type: "BET", amount: 0 }, { match: currentMatch, hand: currentHand });
       } else {
-        await tx.action.create({
-          data: {
-            handId: currentHand.id,
-            matchId: currentMatch.id,
-            playerId: actorId,
-            type: "FOLD",
-            actionVersion: currentMatch.stateVersion,
-            isAuto: true,
-          },
-        });
-        const advanced = await advanceAfterFold(tx, currentMatch, currentHand, actorSlot);
+        const advanced = await advanceAfterFold(tx, currentMatch, currentHand, actorSlot, { auto: true });
         currentMatch = advanced.match;
         currentHand = advanced.hand;
+        await recordAction(tx, { ...record, type: "FOLD" }, { match: currentMatch, hand: currentHand });
       }
     }
 

@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { login, newPlayerPage, startMatch, uniqueName } from "./helpers.js";
+import { login, mesa, newPlayerPage, startMatch, uniqueName } from "./helpers.js";
 
 test("el anillo de foco es un contorno sólido del color de acento (WCAG 1.4.11)", async ({ browser }) => {
   const page = await newPlayerPage(browser);
@@ -20,7 +20,7 @@ test("el anillo de foco es un contorno sólido del color de acento (WCAG 1.4.11)
 
 test("la hoja de abandono atrapa el foco, bloquea la mesa y lo devuelve al cerrar", async ({ browser }) => {
   const { ana } = await startMatch(browser);
-  const resign = ana.locator("#btn-resign");
+  const resign = mesa(ana).locator(".btn-resign");
   await resign.focus();
   await ana.keyboard.press("Enter");
 
@@ -52,7 +52,8 @@ test("la hoja de invitación conserva el foco entre polls", async ({ browser }) 
 
   const play = beto.getByRole("button", { name: "Jugar" });
   await expect(play).toBeFocused();
-  await beto.waitForTimeout(3500); // al menos un poll de invitaciones (cada 3 s)
+  // Al menos un poll de invitaciones más (cada 3 s), sin esperas fijas: se espera la respuesta.
+  await beto.waitForResponse((res) => new URL(res.url()).pathname === "/v1/invitations");
   await expect(play).toBeFocused();
 });
 

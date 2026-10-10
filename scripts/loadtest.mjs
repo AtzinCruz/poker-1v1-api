@@ -6,8 +6,11 @@
 //                                                     no cumple el presupuesto (para CI)
 //
 // Correr contra un servidor apuntado a la BD de test, nunca a la de desarrollo: crea jugadores y partidas.
-// Cada petición lleva su propia IP en X-Forwarded-For (el servidor confía en un salto) para que los
-// límites de tasa por IP no distorsionen la medición.
+// El servidor de carga se levanta con RATE_LIMIT_DISABLED=true (solo vale con NODE_ENV=development/test):
+// todo sale de una IP y los límites de tasa distorsionarían la medición. Antes se fabricaba una IP por
+// petición con X-Forwarded-For, justo el agujero que cerró AUD-02.
+//
+//   NODE_ENV=test RATE_LIMIT_DISABLED=true PORT=3100 DATABASE_URL=<bd de test> node --import tsx src/api/start.ts
 
 const BASE = process.argv.find((a) => a.startsWith("http")) ?? "http://localhost:3100";
 const BUDGET_MODE = process.argv.includes("--budget");
@@ -16,14 +19,8 @@ const BUDGET = { concurrency: 16, minRps: 400, maxP95Ms: 60 };
 const DURATION_MS = Number(process.env.LOADTEST_DURATION_MS ?? 8000);
 const PASSWORD = "contraseña-de-carga-123";
 
-let ipCounter = 1;
-const nextIp = () => {
-  const n = ipCounter++;
-  return `10.${(n >> 16) & 255}.${(n >> 8) & 255}.${n & 255}`;
-};
 const headers = (token, extra = {}) => ({
   "content-type": "application/json",
-  "x-forwarded-for": nextIp(),
   ...(token ? { authorization: `Bearer ${token}` } : {}),
   ...extra,
 });

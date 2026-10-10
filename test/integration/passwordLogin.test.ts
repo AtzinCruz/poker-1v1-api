@@ -5,6 +5,8 @@ import { createTestApp, registerPlayer, authHeaders, TEST_PASSWORD } from "../he
 import { resetDatabase } from "../helpers/db.js";
 import { prisma } from "../../src/infrastructure/prisma/client.js";
 import { hashPassword, verifyPassword } from "../../src/infrastructure/auth/password.js";
+import jwt from "jsonwebtoken";
+import { PLAYER_TOKEN_TTL_SECONDS } from "../../src/infrastructure/auth/jwt.js";
 
 let app: FastifyInstance;
 
@@ -125,7 +127,7 @@ describe("cuentas anteriores a las contraseñas", () => {
     expect(row.passwordHash).not.toContain(temporaryPassword);
     const records = await prisma.adminAction.findMany({ where: { playerId: owner.id } });
     expect(records).toHaveLength(1);
-    expect(records[0]).toMatchObject({ adminName: "root", type: "RESET_PASSWORD" });
+    expect(records[0]).toMatchObject({ adminName: "root (clave compartida)", type: "RESET_PASSWORD" });
     expect(JSON.stringify(records[0])).not.toContain(temporaryPassword);
 
     expect((await login("antigua", "otra-cosa-cualquiera")).statusCode).toBe(401);
@@ -213,5 +215,33 @@ describe("hash de contraseñas", () => {
     expect(await verifyPassword("misma-contraseña", a)).toBe(true);
     expect(await verifyPassword("otra", a)).toBe(false);
     expect(await verifyPassword("misma-contraseña", "basura")).toBe(false);
+  });
+});
+
+describe("sesiones cortas con renovación (AUD-14)", () => {
+  it("el token de jugador dura una hora y se renueva con uno vigente", async () => {
+    const alice = await registerPlayer(app, "alice-refresh");
+    const claims = jwt.decode(alice.token) as { iat: number; exp: number };
+    expect(claims.exp - claims.iat).toBe(PLAYER_TOKEN_TTL_SECONDS);
+    expect(PLAYER_TOKEN_TTL_SECONDS).toBeLessThanOrEqual(60 * 60);
+
+    const refreshed = await app.inject({ method: "POST", url: "/v1/auth/refresh", headers: { authorization: `Bearer ${alice.token}` } });
+    expect(refreshed.statusCode).toBe(200);
+    expect(refreshed.json().player.id).toBe(alice.id);
+    const wallet = await app.inject({ method: "GET", url: "/v1/wallet", headers: { authorization: `Bearer ${refreshed.json().token}` } });
+    expect(wallet.statusCode).toBe(200);
+  });
+
+  it("un token revocado (cambio de contraseña) no se puede renovar", async () => {
+    const alice = await registerPlayer(app, "alice-refresh-revoked");
+    const changed = await app.inject({
+      method: "POST",
+      url: "/v1/auth/password",
+      headers: { authorization: `Bearer ${alice.token}` },
+      payload: { currentPassword: TEST_PASSWORD, newPassword: "otra-contraseña-larga" },
+    });
+    expect(changed.statusCode).toBe(200);
+    const refreshed = await app.inject({ method: "POST", url: "/v1/auth/refresh", headers: { authorization: `Bearer ${alice.token}` } });
+    expect(refreshed.statusCode).toBe(401);
   });
 });

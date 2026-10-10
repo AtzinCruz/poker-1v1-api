@@ -53,7 +53,7 @@ describe("abandonar partida (resign)", () => {
     expect(after.available).toBe(1000);
   });
 
-  it("entrega el saldo en juego al rival cuando alguien abandona una partida en curso (sección 9)", async () => {
+  it("quien abandona una partida en curso se va con su stack; el rival gana la partida y el pozo de la mano", async () => {
     const alice = await registerPlayer(app, "alice-resign-progress");
     const bob = await registerPlayer(app, "bob-resign-progress");
 
@@ -83,12 +83,12 @@ describe("abandonar partida (resign)", () => {
 
     const aliceWallet = await getWallet(alice);
     const bobWallet = await getWallet(bob);
-    // Abandonar = perder todo el saldo en juego: Bob se lleva su stack (980), el de Alice (990) y el
-    // pozo de la mano (30). Entraron 2000 fichas y salen 2000: nada se destruye ni se crea.
+    // Abandonar = retirarse de la mano en curso y quedarse con el resto: Alice conserva sus 990 y Bob
+    // suma el pozo (30) a su stack (980). Entraron 2000 fichas y salen 2000: nada se destruye ni se crea.
     expect(aliceWallet.blocked).toBe(0);
     expect(bobWallet.blocked).toBe(0);
-    expect(aliceWallet.available).toBe(0);
-    expect(bobWallet.available).toBe(2000);
+    expect(aliceWallet.available).toBe(990);
+    expect(bobWallet.available).toBe(1010);
 
     const matchView = await app.inject({
       method: "GET",
@@ -133,8 +133,8 @@ describe("abandonar partida (resign)", () => {
     // El saldo no se liquidó dos veces.
     const aliceWallet = await getWallet(alice);
     const bobWallet = await getWallet(bob);
-    expect(aliceWallet.available).toBe(0);
-    expect(bobWallet.available).toBe(2000);
+    expect(aliceWallet.available).toBe(990);
+    expect(bobWallet.available).toBe(1010);
   });
 
   it("un jugador ajeno a la partida no puede abandonarla por ella", async () => {

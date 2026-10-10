@@ -1,14 +1,16 @@
 import { randomBytes } from "node:crypto";
 import type { Match, Prisma } from "@prisma/client";
 import { prisma } from "../infrastructure/prisma/client.js";
+import { runTransaction } from "../infrastructure/prisma/transaction.js";
 import { withIdempotency } from "../infrastructure/idempotency.js";
 import { DomainError } from "../domain/errors.js";
+import { BLIND_LEVEL_HANDS, blindIncrementFor } from "../domain/blinds.js";
 import { dealNewHand } from "./dealing.js";
 import { resolveExpiredTurns } from "./timeouts.js";
 import { logEvent } from "./events.js";
-import { refundReservedStack } from "./walletSettlement.js";
+import { refundReservedStack, reserveStack } from "./walletSettlement.js";
 import { finishMatchByForfeit } from "./forfeit.js";
-import { lockAndLoadMatch } from "./locks.js";
+import { lockAndLoadMatch, lockAndLoadMatchAfterParent } from "./locks.js";
 import { notifyMatchChanged } from "../infrastructure/matchNotifier.js";
 
 export interface CreateMatchInput {
@@ -19,6 +21,7 @@ export interface CreateMatchInput {
     smallBlind: number;
     bigBlind: number;
     turnTimeoutSeconds?: number;
+    incrementalBlinds?: boolean;
     inviteeId: string;
   };
 }
@@ -28,7 +31,15 @@ export interface MatchResource {
   status: Match["status"];
   stateVersion: number;
   joinToken?: string;
-  rules: { startingStack: number; smallBlind: number; bigBlind: number; maxDiscard: number };
+  rules: {
+    startingStack: number;
+    smallBlind: number;
+    bigBlind: number;
+    maxDiscard: number;
+    /** Fichas que suben ambas ciegas cada `blindLevelHands` manos; 0 = ciegas fijas. */
+    blindIncrement: number;
+    blindLevelHands: number;
+  };
 }
 
 function toMatchResource(match: Match, includeJoinToken: boolean): MatchResource {
@@ -42,6 +53,8 @@ function toMatchResource(match: Match, includeJoinToken: boolean): MatchResource
       smallBlind: match.smallBlind,
       bigBlind: match.bigBlind,
       maxDiscard: match.maxDiscard,
+      blindIncrement: match.blindIncrement,
+      blindLevelHands: match.blindLevelHands,
     },
   };
 }
@@ -54,19 +67,8 @@ export interface MatchRulesInput {
   bigBlind: number;
   turnTimeoutSeconds: number;
   maxDiscard: number;
-}
-
-/** Bloquea al jugador y pasa `amount` de su saldo disponible al bloqueado (la entrada a la partida). */
-async function reserveStack(tx: Tx, playerId: string, amount: number): Promise<void> {
-  await tx.$queryRaw`SELECT id FROM "Player" WHERE id = ${playerId} FOR UPDATE`;
-  const player = await tx.player.findUniqueOrThrow({ where: { id: playerId } });
-  if (player.fictionalBalance < amount) {
-    throw new DomainError("INSUFFICIENT_STACK", "Saldo ficticio insuficiente para esta entrada");
-  }
-  await tx.player.update({
-    where: { id: playerId },
-    data: { fictionalBalance: player.fictionalBalance - amount, blockedBalance: player.blockedBalance + amount },
-  });
+  blindIncrement: number;
+  blindLevelHands: number;
 }
 
 /** Crea una partida esperando al invitado y reserva la entrada de quien la crea. */
@@ -103,14 +105,13 @@ async function joinWaitingMatchInTx(tx: Tx, match: Match, playerId: string): Pro
 export async function createMatch(
   input: CreateMatchInput,
 ): Promise<{ status: number; body: MatchResource; idempotentReplay: boolean }> {
-  return prisma.$transaction(async (tx) => {
-    await tx.$queryRaw`SELECT id FROM "Player" WHERE id = ${input.creatorId} FOR UPDATE`;
-
+  return runTransaction(async (tx) => {
+    // La reserva del saldo es atómica (walletSettlement.reserveStack): ya no hace falta bloquear antes al jugador.
     const result = await withIdempotency(
       tx,
       { playerId: input.creatorId, key: input.idempotencyKey, scope: "create-match", requestBody: input.body },
       async () => {
-        const { startingStack, smallBlind, bigBlind, turnTimeoutSeconds, inviteeId } = input.body;
+        const { startingStack, smallBlind, bigBlind, turnTimeoutSeconds, incrementalBlinds, inviteeId } = input.body;
 
         if (inviteeId === input.creatorId) {
           throw new DomainError("INVALID_ACTION", "No puedes invitarte a ti mismo");
@@ -126,6 +127,8 @@ export async function createMatch(
           bigBlind,
           turnTimeoutSeconds: turnTimeoutSeconds ?? 60,
           maxDiscard: 5,
+          blindIncrement: incrementalBlinds ? blindIncrementFor(startingStack) : 0,
+          blindLevelHands: BLIND_LEVEL_HANDS,
         });
         return { status: 201, body: toMatchResource(match, true) };
       },
@@ -145,19 +148,20 @@ export interface JoinMatchInput {
 export async function joinMatch(
   input: JoinMatchInput,
 ): Promise<{ status: number; body: MatchResource; idempotentReplay: boolean }> {
-  return prisma.$transaction(async (tx) => {
-    const match = await lockAndLoadMatch(tx, input.matchId);
-    if (!match) throw new DomainError("MATCH_NOT_FOUND", "La partida no existe");
-
+  return runTransaction(async (tx) => {
     const result = await withIdempotency(
       tx,
       { playerId: input.playerId, key: input.idempotencyKey, scope: `join:${input.matchId}`, requestBody: input.body },
       async () => {
-        if (match.status !== "WAITING_FOR_OPPONENT") {
-          throw new DomainError("INVALID_ACTION", "La partida ya no acepta un segundo jugador");
-        }
+        const match = await lockAndLoadMatch(tx, input.matchId);
+        if (!match) throw new DomainError("MATCH_NOT_FOUND", "La partida no existe");
+        // Primero la invitación y después el estado (AUD-15): un no invitado recibe siempre 403 y no
+        // puede distinguir partidas ajenas en espera de partidas ya empezadas.
         if (match.inviteeId !== input.playerId) {
           throw new DomainError("NOT_MATCH_PLAYER", "Este jugador no fue invitado a esta partida");
+        }
+        if (match.status !== "WAITING_FOR_OPPONENT") {
+          throw new DomainError("INVALID_ACTION", "La partida ya no acepta un segundo jugador");
         }
         if (match.joinToken !== input.body.joinToken) {
           throw new DomainError("INVALID_ACTION", "Token de invitación inválido");
@@ -182,7 +186,7 @@ export async function resignMatch(
   input: ResignInput,
 ): Promise<{ status: number; body: MatchResource; idempotentReplay: boolean }> {
   // Paso 1: confirma timeouts vencidos (con el lock de la partida) aunque el resign en sí falle.
-  await prisma.$transaction(async (tx) => {
+  await runTransaction(async (tx) => {
     const match = await lockAndLoadMatch(tx, input.matchId);
     if (!match) return;
     if (match.player1Id !== input.playerId && match.player2Id !== input.playerId) return;
@@ -192,14 +196,14 @@ export async function resignMatch(
     await resolveExpiredTurns(tx, match, hand);
   });
 
-  return prisma.$transaction(async (tx) => {
-    const match = await lockAndLoadMatch(tx, input.matchId);
-    if (!match) throw new DomainError("MATCH_NOT_FOUND", "La partida no existe");
-
+  return runTransaction(async (tx) => {
     const result = await withIdempotency(
       tx,
       { playerId: input.playerId, key: input.idempotencyKey, scope: `resign:${input.matchId}`, requestBody: {} },
       async () => {
+        // Si es una revancha en espera, cancelarla avisa a la original: esa se bloquea antes (AUD-04).
+        const match = await lockAndLoadMatchAfterParent(tx, input.matchId);
+        if (!match) throw new DomainError("MATCH_NOT_FOUND", "La partida no existe");
         if (match.player1Id !== input.playerId && match.player2Id !== input.playerId) {
           throw new DomainError("NOT_MATCH_PLAYER", "El jugador no pertenece a esta partida");
         }
@@ -222,7 +226,10 @@ export async function resignMatch(
   });
 }
 
-/** Cancela una partida que nadie aceptó y libera la reserva de su creador. */
+/**
+ * Cancela una partida que nadie aceptó y libera la reserva de su creador. Si es una revancha, la
+ * partida original ya debe estar bloqueada (lockAndLoadMatchAfterParent): se le sube la versión.
+ */
 export async function cancelWaitingMatch(tx: Prisma.TransactionClient, match: Match): Promise<Match> {
   const updated = await tx.match.update({
     where: { id: match.id },
@@ -249,7 +256,7 @@ export interface Invitation {
   joinToken: string;
   creatorId: string;
   creatorDisplayName: string;
-  rules: { startingStack: number; smallBlind: number; bigBlind: number };
+  rules: { startingStack: number; smallBlind: number; bigBlind: number; blindIncrement: number; blindLevelHands: number };
   createdAt: string;
 }
 
@@ -269,7 +276,13 @@ export async function listPendingInvitations(playerId: string): Promise<Invitati
     joinToken: m.joinToken,
     creatorId: m.player1Id,
     creatorDisplayName: m.player1.displayName,
-    rules: { startingStack: m.startingStack, smallBlind: m.smallBlind, bigBlind: m.bigBlind },
+    rules: {
+      startingStack: m.startingStack,
+      smallBlind: m.smallBlind,
+      bigBlind: m.bigBlind,
+      blindIncrement: m.blindIncrement,
+      blindLevelHands: m.blindLevelHands,
+    },
     createdAt: m.createdAt.toISOString(),
   }));
 }
@@ -361,14 +374,14 @@ export interface RematchInput {
 export async function requestRematch(
   input: RematchInput,
 ): Promise<{ status: number; body: MatchResource; idempotentReplay: boolean }> {
-  return prisma.$transaction(async (tx) => {
-    const original = await lockAndLoadMatch(tx, input.matchId);
-    if (!original) throw new DomainError("MATCH_NOT_FOUND", "La partida no existe");
-
+  return runTransaction(async (tx) => {
     const result = await withIdempotency(
       tx,
       { playerId: input.playerId, key: input.idempotencyKey, scope: `rematch:${input.matchId}`, requestBody: {} },
       async () => {
+        // Orden global de locks: la original antes que su revancha, igual que al cancelar la revancha.
+        const original = await lockAndLoadMatch(tx, input.matchId);
+        if (!original) throw new DomainError("MATCH_NOT_FOUND", "La partida no existe");
         if (input.playerId !== original.player1Id && input.playerId !== original.player2Id) {
           throw new DomainError("NOT_MATCH_PLAYER", "El jugador no pertenece a esta partida");
         }
@@ -399,6 +412,8 @@ export async function requestRematch(
           bigBlind: original.bigBlind,
           turnTimeoutSeconds: original.turnTimeoutSeconds,
           maxDiscard: original.maxDiscard,
+          blindIncrement: original.blindIncrement,
+          blindLevelHands: original.blindLevelHands,
         });
         await tx.match.update({
           where: { id: original.id },

@@ -53,6 +53,7 @@
     <!-- Lobby -->
     <section id="screen-lobby" class="screen hidden">
       <h1 class="large-title">Hola, <span id="lobby-name"></span></h1>
+      <button id="btn-open-tables" class="btn btn-tinted btn-block open-tables hidden" type="button"></button>
 
       <section id="my-matches" class="hidden" aria-labelledby="my-matches-title">
         <h2 id="my-matches-title" class="section-header section-header-first">Tus partidas</h2>
@@ -68,12 +69,12 @@
         <details class="disclosure">
           <summary>
             <span>Reglas</span>
-            <span id="rules-summary" class="disclosure-value">1000 fichas · 10/20 · 60 s</span>
+            <span id="rules-summary" class="disclosure-value">300 fichas · 10/20 · 60 s</span>
           </summary>
           <div class="field-grid">
             <label class="field">
               <span class="field-label">Fichas</span>
-              <input id="input-starting-stack" type="number" inputmode="numeric" min="100" max="100000" value="1000" required />
+              <input id="input-starting-stack" type="number" inputmode="numeric" min="100" max="100000" value="300" required />
             </label>
             <label class="field">
               <span class="field-label">Ciega chica</span>
@@ -88,6 +89,13 @@
               <input id="input-turn-timeout" type="number" inputmode="numeric" min="15" max="120" value="60" required />
             </label>
           </div>
+          <label class="toggle-row">
+            <span class="row-text">
+              <span class="headline">Ciegas que suben</span>
+              <span id="incremental-blinds-hint" class="footnote">Cada 3 manos, las dos suben el 5 % de las fichas iniciales (+15).</span>
+            </span>
+            <input id="input-incremental-blinds" class="switch" type="checkbox" role="switch" />
+          </label>
         </details>
         <button type="submit" class="btn btn-primary btn-block">Invitar</button>
         <p id="create-error" class="error hidden" role="alert"></p>
@@ -125,79 +133,21 @@
       </div>
     </section>
 
-    <!-- Mesa -->
+    <!-- Mesas: hasta 4 partidas a la vez, en pantalla dividida -->
     <section id="screen-table" class="screen hidden">
-      <nav class="table-nav">
+      <nav class="tables-nav">
         <button id="btn-back-lobby" class="btn btn-plain btn-back" type="button">Lobby</button>
-        <div class="table-title">
-          <span id="match-hand" class="headline"></span>
-          <span id="match-status-line" class="footnote"></span>
-        </div>
-        <button id="btn-resign" class="btn btn-plain btn-destructive-text" type="button">Abandonar</button>
+        <p id="tables-summary" class="footnote tables-summary" aria-live="polite"></p>
+        <button id="btn-add-table" class="btn btn-plain" type="button">Otra mesa</button>
       </nav>
-
-      <div class="table">
-        <section class="seat" id="opponent-panel" aria-label="Rival">
-          <div class="seat-header">
-            <span class="seat-name" id="opponent-name">Rival</span>
-            <span class="seat-stack"><span id="opponent-stack">–</span> fichas</span>
-          </div>
-          <div class="cards" id="opponent-cards"></div>
-          <span class="bet-chip" id="opponent-bet"><span class="bet-chip-label">Apuesta</span> <span id="opponent-contribution">0</span></span>
-        </section>
-
-        <div class="pot-area">
-          <div class="timer" id="turn-timer" aria-hidden="true">
-            <span id="turn-seconds"></span>
-          </div>
-          <div class="pot">
-            <span class="pot-label">Pozo</span>
-            <span id="pot-amount" class="pot-amount">0</span>
-          </div>
-          <p id="turn-indicator" class="turn-indicator" aria-live="polite"></p>
-        </div>
-
-        <section class="seat seat-you" id="you-panel" aria-label="Tú">
-          <span class="bet-chip" id="you-bet"><span class="bet-chip-label">Apuesta</span> <span id="you-contribution">0</span></span>
-          <div class="cards" id="you-cards"></div>
-          <div class="seat-header">
-            <span class="seat-name">Tú</span>
-            <span class="seat-stack"><span id="you-stack">–</span> fichas</span>
-          </div>
-        </section>
-      </div>
-
-      <div class="action-bar">
-        <p id="action-hint" class="action-hint hidden"></p>
-        <div id="action-panel" class="action-panel"></div>
-        <p id="action-error" class="error hidden" role="alert"></p>
-      </div>
+      <div id="tables" class="tables" data-count="0"></div>
     </section>
   </main>
 
-  <!-- Aviso breve (resultado de una mano sin showdown, copiado, etc.) -->
+  <!-- Aviso breve (mesas llenas, partida no disponible, etc.); el resultado de cada mano va en su mesa -->
   <div id="hand-result-banner" class="toast hidden" role="status"></div>
   <!-- Anuncios solo para lectores de pantalla (p. ej. "quedan 10 segundos") -->
   <div id="sr-announcer" class="sr-only" role="status" aria-live="polite"></div>
-
-  <!-- Showdown -->
-  <div id="showdown-popup" class="sheet-overlay hidden">
-    <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="showdown-title">
-      <p id="showdown-title" class="footnote sheet-eyebrow">Showdown</p>
-      <p id="showdown-result" class="title sheet-title"></p>
-      <div class="showdown-hands">
-        <div class="showdown-hand">
-          <span class="caption">Tú</span>
-          <div id="showdown-you-cards" class="cards cards-small"></div>
-        </div>
-        <div class="showdown-hand">
-          <span class="caption" id="showdown-opponent-name">Rival</span>
-          <div id="showdown-opponent-cards" class="cards cards-small"></div>
-        </div>
-      </div>
-      <button id="btn-close-showdown" class="btn btn-primary btn-block" type="button">Continuar</button>
-    </div>
-  </div>
 
   <!-- Invitaciones -->
   <div id="invitation-popup" class="sheet-overlay hidden">
@@ -212,13 +162,82 @@
   <div id="resign-popup" class="sheet-overlay hidden">
     <div class="sheet sheet-alert" role="alertdialog" aria-modal="true" aria-labelledby="resign-title" aria-describedby="resign-text">
       <p id="resign-title" class="headline">¿Abandonar la partida?</p>
-      <p id="resign-text" class="footnote">Tu rival se queda con todas las fichas en juego.</p>
+      <p id="resign-text" class="footnote">Te vas con las fichas que te quedan; lo que ya apostaste en esta mano es para tu rival.</p>
       <div class="alert-actions">
         <button id="btn-resign-cancel" class="btn btn-plain" type="button">Cancelar</button>
         <button id="btn-resign-confirm" class="btn btn-destructive" type="button">Abandonar</button>
       </div>
     </div>
   </div>
+
+  <!-- Una mesa: app.js clona esta plantilla por cada partida abierta -->
+  <template id="table-template">
+    <article class="mesa">
+      <header class="mesa-header">
+        <div class="table-title">
+          <span class="match-hand headline"></span>
+          <span class="match-status-line footnote"></span>
+        </div>
+        <span class="blinds-line footnote"></span>
+        <div class="mesa-actions">
+          <button class="btn btn-plain btn-destructive-text btn-resign" type="button">Abandonar</button>
+          <button class="btn btn-plain btn-close-table" type="button" aria-label="Cerrar esta mesa (la partida sigue)">Cerrar</button>
+        </div>
+      </header>
+
+      <div class="table">
+        <section class="seat opponent-panel" aria-label="Rival">
+          <div class="seat-header">
+            <span class="seat-name opponent-name">Rival</span>
+            <span class="seat-stack"><span class="opponent-stack">–</span> fichas</span>
+          </div>
+          <span class="draw-note opponent-draw hidden"></span>
+          <div class="cards opponent-cards"></div>
+          <span class="bet-chip opponent-bet"><span class="bet-chip-label">Apuesta</span> <span class="opponent-contribution">0</span></span>
+        </section>
+
+        <div class="pot-area">
+          <div class="timer turn-timer idle" aria-hidden="true">
+            <span class="turn-seconds"></span>
+          </div>
+          <div class="pot">
+            <span class="pot-label">Pozo</span>
+            <span class="pot-amount">0</span>
+          </div>
+          <p class="turn-indicator" aria-live="polite"></p>
+        </div>
+
+        <section class="hand-result hidden" role="status">
+          <p class="hand-result-text"></p>
+          <div class="hand-result-hands hidden">
+            <div class="showdown-hand">
+              <span class="caption">Tú</span>
+              <div class="cards cards-small result-you-cards"></div>
+            </div>
+            <div class="showdown-hand">
+              <span class="caption result-opponent-name">Rival</span>
+              <div class="cards cards-small result-opponent-cards"></div>
+            </div>
+          </div>
+        </section>
+
+        <section class="seat seat-you you-panel" aria-label="Tú">
+          <span class="bet-chip you-bet"><span class="bet-chip-label">Apuesta</span> <span class="you-contribution">0</span></span>
+          <div class="cards you-cards"></div>
+          <div class="seat-header">
+            <span class="seat-name">Tú</span>
+            <span class="seat-stack"><span class="you-stack">–</span> fichas</span>
+          </div>
+        </section>
+      </div>
+
+      <div class="action-bar">
+        <p class="action-hint hidden"></p>
+        <div class="action-panel"></div>
+        <p class="error action-error hidden" role="alert"></p>
+      </div>
+    </article>
+  </template>
 
   <script type="module" src="/app.js"></script>
 </body>

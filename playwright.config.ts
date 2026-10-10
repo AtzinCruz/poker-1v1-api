@@ -41,6 +41,8 @@ export default defineConfig({
       DATABASE_URL,
       JWT_SECRET: process.env.JWT_SECRET ?? "e2e-only-jwt-secret",
       ADMIN_SECRET: process.env.ADMIN_SECRET ?? "e2e-only-admin-secret",
+      // El test hace de proxy: cada página manda su X-Forwarded-For (e2e/helpers.ts).
+      TRUST_PROXY_HOPS: "1",
     },
   },
 });

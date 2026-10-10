@@ -13,12 +13,36 @@ import {
   listActiveMatches,
 } from "../../application/matchService.js";
 import { getMatchViewForPlayer } from "../../application/handQueryService.js";
+import type { PlayerLimits } from "../rateLimits.js";
 
 /** Por debajo del timeout de inactividad habitual de proxies (30–60 s). */
 export const LONG_POLL_MAX_MS = 25_000;
+/**
+ * Esperas abiertas a la vez (AUD-06): por jugador en una misma partida, y por jugador en total (el
+ * cliente muestra hasta 4 mesas, una espera cada una). Pasado el tope la petición se responde al
+ * instante, sin esperar; si el cliente insiste, lo frena el límite de lecturas por partida. Antes un
+ * solo token abría miles de esperas y, al despertar todas juntas, degradaba la latencia de todos.
+ */
+export const MAX_WAITS_PER_MATCH = 3;
+export const MAX_WAITS_PER_PLAYER = 16;
 const matchViewQuerySchema = z.object({ since: z.coerce.number().int().nonnegative().optional() });
 
-export async function matchRoutes(app: FastifyInstance): Promise<void> {
+/** Contador de esperas abiertas por clave (en memoria, por instancia). */
+class WaitCounter {
+  private readonly open = new Map<string, number>();
+  count(key: string): number {
+    return this.open.get(key) ?? 0;
+  }
+  add(key: string, delta: 1 | -1): void {
+    const next = this.count(key) + delta;
+    if (next <= 0) this.open.delete(key);
+    else this.open.set(key, next);
+  }
+}
+
+export async function matchRoutes(app: FastifyInstance, { limits }: { limits: PlayerLimits }): Promise<void> {
+  const waits = new WaitCounter();
+
   app.get("/v1/invitations", async (request, reply) => {
     const playerId = await requireAuthenticatedPlayer(request);
     const invitations = await listPendingInvitations(playerId);
@@ -31,7 +55,7 @@ export async function matchRoutes(app: FastifyInstance): Promise<void> {
     return reply.code(200).send(await listActiveMatches(playerId));
   });
 
-  app.post("/v1/matches", async (request, reply) => {
+  app.post("/v1/matches", { preHandler: limits.createMatch }, async (request, reply) => {
     const playerId = await requireAuthenticatedPlayer(request);
     const idempotencyKey = requireIdempotencyKey(request);
     const body = createMatchSchema.parse(request.body);
@@ -40,7 +64,7 @@ export async function matchRoutes(app: FastifyInstance): Promise<void> {
     return reply.code(result.status).send(result.body);
   });
 
-  app.post("/v1/matches/:matchId/join", async (request, reply) => {
+  app.post("/v1/matches/:matchId/join", { preHandler: limits.matchCommand }, async (request, reply) => {
     const playerId = await requireAuthenticatedPlayer(request);
     const idempotencyKey = requireIdempotencyKey(request);
     const { matchId } = request.params as { matchId: string };
@@ -55,11 +79,16 @@ export async function matchRoutes(app: FastifyInstance): Promise<void> {
    * partida pase de esa versión, cuando vence el turno en curso (para que el timeout se resuelva) o
    * a los LONG_POLL_MAX_MS, lo que ocurra primero. Reemplaza el polling de 1.5 s del cliente.
    */
-  app.get("/v1/matches/:matchId", async (request, reply) => {
+  app.get("/v1/matches/:matchId", { preHandler: limits.matchRead }, async (request, reply) => {
     const playerId = await requireAuthenticatedPlayer(request);
     const { matchId } = request.params as { matchId: string };
     const { since } = matchViewQuerySchema.parse(request.query);
     if (since === undefined) {
+      return reply.code(200).send(await getMatchViewForPlayer(matchId, playerId));
+    }
+
+    const perMatch = `${playerId}|${matchId}`;
+    if (waits.count(perMatch) >= MAX_WAITS_PER_MATCH || waits.count(playerId) >= MAX_WAITS_PER_PLAYER) {
       return reply.code(200).send(await getMatchViewForPlayer(matchId, playerId));
     }
 
@@ -80,6 +109,11 @@ export async function matchRoutes(app: FastifyInstance): Promise<void> {
       wait.cancel();
       return reply.code(200).send(view);
     }
+    // Se vuelve a mirar el tope: la lectura de arriba es asíncrona y otras esperas pudieron abrirse.
+    if (waits.count(perMatch) >= MAX_WAITS_PER_MATCH || waits.count(playerId) >= MAX_WAITS_PER_PLAYER) {
+      wait.cancel();
+      return reply.code(200).send(view);
+    }
 
     const untilTurnExpires = view.turn ? Date.parse(view.turn.expiresAt) - Date.now() + 50 : LONG_POLL_MAX_MS;
     const expiryTimer = setTimeout(wait.cancel, Math.max(0, untilTurnExpires));
@@ -89,9 +123,13 @@ export async function matchRoutes(app: FastifyInstance): Promise<void> {
       wait.cancel();
     };
     reply.raw.once("close", onClose);
+    waits.add(perMatch, 1);
+    waits.add(playerId, 1);
     try {
       await wait.changed;
     } finally {
+      waits.add(perMatch, -1);
+      waits.add(playerId, -1);
       clearTimeout(expiryTimer);
       reply.raw.off("close", onClose);
     }
@@ -100,7 +138,7 @@ export async function matchRoutes(app: FastifyInstance): Promise<void> {
   });
 
   /** Revancha con las mismas reglas: el primero la crea (201), el segundo la acepta (200). */
-  app.post("/v1/matches/:matchId/rematch", async (request, reply) => {
+  app.post("/v1/matches/:matchId/rematch", { preHandler: limits.matchCommand }, async (request, reply) => {
     const playerId = await requireAuthenticatedPlayer(request);
     const idempotencyKey = requireIdempotencyKey(request);
     const { matchId } = request.params as { matchId: string };
@@ -108,7 +146,7 @@ export async function matchRoutes(app: FastifyInstance): Promise<void> {
     return reply.code(result.status).send(result.body);
   });
 
-  app.post("/v1/matches/:matchId/resign", async (request, reply) => {
+  app.post("/v1/matches/:matchId/resign", { preHandler: limits.matchCommand }, async (request, reply) => {
     const playerId = await requireAuthenticatedPlayer(request);
     const idempotencyKey = requireIdempotencyKey(request);
     const { matchId } = request.params as { matchId: string };

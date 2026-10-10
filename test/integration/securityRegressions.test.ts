@@ -110,10 +110,10 @@ describe("resign y timeouts (críticos #1, #2)", () => {
 
     // Una sola liquidación: entraron 2000 fichas y siguen siendo 2000.
     expect(await totalChips(alice, bob)).toBe(2000);
-    expect(await wallet(bob)).toMatchObject({ available: 2000, blocked: 0 });
+    expect(await wallet(bob)).toMatchObject({ available: 1010, blocked: 0 });
   });
 
-  it("abandonar entrega al rival el pozo y ambos stacks: no se destruyen fichas", async () => {
+  it("abandonar entrega al rival el pozo y quien se va conserva su stack: no se destruyen fichas", async () => {
     const alice = await registerPlayer(app, "alice-forfeit");
     const bob = await registerPlayer(app, "bob-forfeit");
     const matchId = await startMatch(alice, bob);
@@ -124,9 +124,10 @@ describe("resign y timeouts (críticos #1, #2)", () => {
 
     await app.inject({ method: "POST", url: `/v1/matches/${matchId}/resign`, headers: authHeaders(bob) });
 
+    // Pozo de 40 para Alice (980 + 40); Bob se va con los 980 que no había apostado.
     expect(await totalChips(alice, bob)).toBe(2000);
-    expect(await wallet(alice)).toMatchObject({ available: 2000, blocked: 0 });
-    expect(await wallet(bob)).toMatchObject({ available: 0, blocked: 0 });
+    expect(await wallet(alice)).toMatchObject({ available: 1020, blocked: 0 });
+    expect(await wallet(bob)).toMatchObject({ available: 980, blocked: 0 });
     const final = await view(matchId, alice);
     expect(final.finishReason).toBe("RESIGN");
     expect(final.winnerId).toBe(alice.id);
@@ -288,16 +289,30 @@ describe("límite de tasa detrás de un proxy (trustProxy)", () => {
 });
 
 describe("validaciones (alto #6, medio #8, bajos)", () => {
-  it("rechaza una ciega grande que supera 1/5 del stack inicial (la partida no podría jugarse)", async () => {
+  it("rechaza una ciega grande que no cabe en el stack inicial (no se podría repartir ninguna mano)", async () => {
     const alice = await registerPlayer(app, "alice-blinds");
     const bob = await registerPlayer(app, "bob-blinds");
 
-    const tooBig = await createMatch(alice, bob, { startingStack: 1000, smallBlind: 500, bigBlind: 1000 });
+    const tooBig = await createMatch(alice, bob, { startingStack: 1000, smallBlind: 500, bigBlind: 1001 });
     expect(tooBig.statusCode).toBe(400);
-    const edge = await createMatch(alice, bob, { startingStack: 1000, smallBlind: 100, bigBlind: 201 });
-    expect(edge.statusCode).toBe(400);
-    const ok = await createMatch(alice, bob, { startingStack: 1000, smallBlind: 100, bigBlind: 200 });
-    expect(ok.statusCode).toBe(201);
+    // §6.1 permite cualquier 0 < chica < grande (AUD-17): antes 100/20/50 se rechazaba por la regla × 5.
+    const permitted = await createMatch(alice, bob, { startingStack: 100, smallBlind: 20, bigBlind: 50 });
+    expect(permitted.statusCode).toBe(201);
+    const edge = await createMatch(alice, bob, { startingStack: 200, smallBlind: 100, bigBlind: 200 });
+    expect(edge.statusCode).toBe(201);
+  });
+
+  it("sin ciegas en la petición usa las predeterminadas del §2.1 (10/20)", async () => {
+    const alice = await registerPlayer(app, "alice-defaults");
+    const bob = await registerPlayer(app, "bob-defaults");
+    const res = await app.inject({
+      method: "POST",
+      url: "/v1/matches",
+      headers: authHeaders(alice),
+      payload: { startingStack: 1000, inviteeId: bob.id },
+    });
+    expect(res.statusCode).toBe(201);
+    expect(res.json().rules).toMatchObject({ smallBlind: 10, bigBlind: 20 });
   });
 
   it("la misma Idempotency-Key no se puede reusar en otra partida", async () => {
@@ -351,13 +366,19 @@ describe("terminación de la partida (medios #11, regla de eliminación)", () =>
         player2Stack: 185,
       },
     });
+    // La entrada de cada uno queda reservada, como al crear y unirse de verdad: la liquidación la libera
+    // y la BD rechaza un saldo bloqueado negativo (AUD-18).
+    await prisma.player.updateMany({
+      where: { id: { in: [alice.id, bob.id] } },
+      data: { fictionalBalance: { decrement: 100 }, blockedBalance: { increment: 100 } },
+    });
     const result = await prisma.$transaction((tx) => dealNewHand(tx, match));
     expect(result.matchFinished).toBe(true);
     expect(result.match.finishReason).toBe("INSUFFICIENT_STACK");
     expect(result.match.winnerId).toBe(bob.id);
   });
 
-  it("tras 3 acciones automáticas seguidas el jugador se da por desconectado y pierde el saldo en juego", async () => {
+  it("tras 3 acciones automáticas seguidas el jugador se da por desconectado: pierde la partida, no su stack", async () => {
     const alice = await registerPlayer(app, "alice-gone");
     const bob = await registerPlayer(app, "bob-gone");
     const matchId = await startMatch(alice, bob);
@@ -374,7 +395,9 @@ describe("terminación de la partida (medios #11, regla de eliminación)", () =>
     expect(final.finishReason).toBe("DISCONNECT_TIMEOUT");
     expect(final.winnerId).toBe(bob.id);
     expect(await totalChips(alice, bob)).toBe(2000);
-    expect(await wallet(alice)).toMatchObject({ available: 0, blocked: 0 });
+    // Igual que al abandonar: se va con lo que le quedaba (solo pierde lo apostado en la mano en curso).
+    expect(final.opponent.stack).toBeGreaterThan(0);
+    expect(await wallet(alice)).toMatchObject({ available: final.opponent.stack, blocked: 0 });
   });
 
   it("el barrido en segundo plano resuelve turnos vencidos aunque nadie consulte la partida", async () => {
@@ -434,19 +457,19 @@ describe("auditoría de saldo del admin", () => {
     const ok = await app.inject({
       method: "POST",
       url: `/v1/admin/players/${alice.id}/add-balance`,
-      headers,
+      headers: { ...headers, "idempotency-key": randomUUID() },
       payload: { amount: 250 },
     });
     expect(ok.statusCode).toBe(200);
     const records = await prisma.adminAction.findMany({ where: { playerId: alice.id } });
     expect(records).toHaveLength(1);
-    expect(records[0]).toMatchObject({ adminName: "root", type: "ADD_BALANCE", amount: 250, balanceBefore: 1000, balanceAfter: 1250 });
+    expect(records[0]).toMatchObject({ adminName: "root (clave compartida)", type: "ADD_BALANCE", amount: 250, balanceBefore: 1000, balanceAfter: 1250 });
 
     await prisma.player.update({ where: { id: alice.id }, data: { fictionalBalance: MAX_FICTIONAL_BALANCE - 100 } });
     const overflow = await app.inject({
       method: "POST",
       url: `/v1/admin/players/${alice.id}/add-balance`,
-      headers,
+      headers: { ...headers, "idempotency-key": randomUUID() },
       payload: { amount: 1000 },
     });
     expect(overflow.statusCode).toBe(400);

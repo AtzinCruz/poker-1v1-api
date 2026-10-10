@@ -2,7 +2,8 @@ import type { Hand, Match, Prisma } from "@prisma/client";
 import { formatCard } from "../domain/card.js";
 import { shuffleWithSeed } from "../domain/deck.js";
 import { DomainError } from "../domain/errors.js";
-import { readSlot, slotUpdate, type Slot } from "./seats.js";
+import { logEvent } from "./events.js";
+import { playerIdOfSlot, readSlot, slotUpdate, type Slot } from "./seats.js";
 
 type Tx = Prisma.TransactionClient;
 
@@ -20,13 +21,18 @@ export function validateDiscardIndexes(indexes: number[], maxDiscard: number): v
   }
 }
 
-/** Reemplaza las cartas descartadas tomando las siguientes del mazo ya barajado (seed comprometida al repartir). */
+/**
+ * Reemplaza las cartas descartadas tomando las siguientes del mazo ya barajado (seed comprometida al
+ * repartir). Guarda cuántas cambió y deja el evento §7 `draw.completed` (público: cuántas, nunca
+ * cuáles), sea un draw del jugador o el automático por tiempo (AUD-08, AUD-10).
+ */
 export async function applyDraw(
   tx: Tx,
   match: Match,
   hand: Hand,
   slot: Slot,
   discardedIndexes: number[],
+  options: { auto?: boolean } = {},
 ): Promise<Hand> {
   const view = readSlot(hand, slot);
   if (view.discarded) {
@@ -42,13 +48,21 @@ export async function applyDraw(
     cursor += 1;
   }
 
-  return tx.hand.update({
+  const updated = await tx.hand.update({
     where: { id: hand.id },
     data: {
       deckCursor: cursor,
-      ...slotUpdate(slot, { discarded: true, cards: newCards }),
+      ...slotUpdate(slot, { discarded: true, discardedCount: discardedIndexes.length, cards: newCards }),
     },
   });
+  await logEvent(tx, {
+    matchId: match.id,
+    handId: hand.id,
+    type: "draw.completed",
+    stateVersion: match.stateVersion,
+    publicPayload: { playerId: playerIdOfSlot(match, slot), discardedCount: discardedIndexes.length, auto: options.auto ?? false },
+  });
+  return updated;
 }
 
 /** Todo cambio de estado visible para el cliente (incluido un draw) debe subir stateVersion, o actionVersion no protege nada. */

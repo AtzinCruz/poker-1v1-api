@@ -1,8 +1,14 @@
 import type { Hand, Match, Prisma } from "@prisma/client";
-import type { BettingRoundResult, BettingRoundState, Seat } from "../domain/bettingEngine.js";
+import { blindsForHand } from "../domain/blinds.js";
+import { legalBettingActions, type BettingRoundResult, type BettingRoundState, type LegalBettingAction, type Seat } from "../domain/bettingEngine.js";
+import { logEvent } from "./events.js";
 import { getMatchStack, matchStackField, otherSlot, playerIdOfSlot, readSlot, slotOfPlayer, slotUpdate, type Slot } from "./seats.js";
 
 type Tx = Prisma.TransactionClient;
+
+export type LegalActionView =
+  | { type: "DRAW"; minDiscard: number; maxDiscard: number }
+  | LegalBettingAction;
 
 export function buttonSlot(match: Match, hand: Hand): Slot {
   return slotOfPlayer(match, hand.dealerPlayerId);
@@ -48,8 +54,42 @@ export function toEngineState(match: Match, hand: Hand): BettingRoundState {
   };
 }
 
+/** Acciones legales de `playerId` en la mano (vacío si no es su turno). */
+export function legalActionsFor(match: Match, hand: Hand | null, playerId: string): LegalActionView[] {
+  if (!hand || hand.toActPlayerId !== playerId) return [];
+
+  if (hand.phase === "DRAW") {
+    return [{ type: "DRAW", minDiscard: 0, maxDiscard: match.maxDiscard }];
+  }
+
+  if (hand.phase === "BETTING_PRE_DRAW" || hand.phase === "BETTING_POST_DRAW") {
+    const state = toEngineState(match, hand);
+    const seat = slotToSeat(buttonSlot(match, hand), slotOfPlayer(match, playerId));
+    return legalBettingActions(state, seat);
+  }
+
+  return [];
+}
+
+/** Evento §7 `turn.started` (sin WebSocket queda en la bitácora de la partida, AUD-10). */
+export async function logTurnStarted(tx: Tx, match: Match, hand: Hand): Promise<void> {
+  if (!hand.toActPlayerId || !hand.turnExpiresAt) return;
+  await logEvent(tx, {
+    matchId: match.id,
+    handId: hand.id,
+    type: "turn.started",
+    stateVersion: match.stateVersion,
+    publicPayload: {
+      playerId: hand.toActPlayerId,
+      phase: hand.phase,
+      expiresAt: hand.turnExpiresAt.toISOString(),
+      legalActions: legalActionsFor(match, hand, hand.toActPlayerId),
+    },
+  });
+}
+
 /**
- * Persiste el resultado de una acción de apuesta (BET/ALL_IN) contra Hand y Match.
+ * Persiste el resultado de una acción de apuesta (BET/ALL_IN) de `actorId` contra Hand y Match.
  * No decide la transición de fase — eso lo hace el caller según `result.closed`.
  */
 export async function persistBettingRoundResult(
@@ -57,6 +97,7 @@ export async function persistBettingRoundResult(
   match: Match,
   hand: Hand,
   result: BettingRoundResult,
+  actorId: string,
 ): Promise<{ match: Match; hand: Hand }> {
   const button = buttonSlot(match, hand);
   const other = otherSlot(button);
@@ -102,22 +143,38 @@ export async function persistBettingRoundResult(
     },
   });
 
+  await logEvent(tx, {
+    matchId: match.id,
+    handId: hand.id,
+    type: "betting.updated",
+    stateVersion: updatedMatch.stateVersion,
+    publicPayload: {
+      playerId: actorId,
+      pot: updatedHand.player1Contribution + updatedHand.player2Contribution,
+      currentBet: updatedHand.currentBet,
+      contributions: { player1: updatedHand.player1Contribution, player2: updatedHand.player2Contribution },
+      stacks: { player1: updatedMatch.player1Stack, player2: updatedMatch.player2Stack },
+      ...(result.refund ? { refund: { playerId: playerIdOfSlot(match, seatToSlot(button, result.refund.seat)), amount: result.refund.amount } } : {}),
+    },
+  });
+  if (!result.closed) await logTurnStarted(tx, updatedMatch, updatedHand);
+
   return { match: updatedMatch, hand: updatedHand };
 }
 
-/** Arranca una nueva ronda de apuestas (post-draw): currentBet=0, mínimo de apertura = ciega grande. */
+/** Arranca una nueva ronda de apuestas (post-draw): currentBet=0, mínimo de apertura = ciega grande de esta mano. */
 export async function startBettingRound(
   tx: Tx,
   match: Match,
   hand: Hand,
   firstToActSlot: Slot,
 ): Promise<Hand> {
-  return tx.hand.update({
+  const updated = await tx.hand.update({
     where: { id: hand.id },
     data: {
       phase: "BETTING_POST_DRAW",
       currentBet: 0,
-      lastFullRaise: match.bigBlind,
+      lastFullRaise: blindsForHand(match, hand.number).big,
       toActPlayerId: playerIdOfSlot(match, firstToActSlot),
       turnExpiresAt: new Date(Date.now() + match.turnTimeoutSeconds * 1000),
       player1RoundStartContribution: hand.player1Contribution,
@@ -126,4 +183,6 @@ export async function startBettingRound(
       player2ActedInRound: false,
     },
   });
+  await logTurnStarted(tx, match, updated);
+  return updated;
 }

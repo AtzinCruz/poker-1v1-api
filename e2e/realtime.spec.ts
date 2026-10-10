@@ -1,5 +1,5 @@
 import { test, expect, type Page } from "@playwright/test";
-import { startMatch } from "./helpers.js";
+import { mesa, startMatch, waitForLongPoll } from "./helpers.js";
 
 /** Cuenta las peticiones de vista de partida que la página inicia (no las de acciones). */
 function countMatchReads(page: Page): { readonly count: number } {
@@ -22,19 +22,20 @@ async function setHidden(page: Page, hidden: boolean) {
 test("la jugada del rival aparece al instante (long-poll, no un intervalo de 1.5 s)", async ({ browser }) => {
   const { ana, beto } = await startMatch(browser);
   // Ana es el botón y actúa primero; Beto espera su turno con un long-poll abierto.
-  await expect(beto.locator("#turn-indicator")).toHaveText(/^Turno de ana-/);
-  await beto.waitForTimeout(500);
+  await expect(mesa(beto).locator(".turn-indicator")).toHaveText(/^Turno de ana-/);
+  await waitForLongPoll(beto);
 
   const started = Date.now();
-  await ana.getByRole("button", { name: /^Igualar/ }).click();
-  await expect(beto.locator("#turn-indicator")).toHaveText("Tu turno", { timeout: 5000 });
+  await mesa(ana).getByRole("button", { name: /^Igualar/ }).click();
+  await expect(mesa(beto).locator(".turn-indicator")).toHaveText("Tu turno", { timeout: 5000 });
   expect(Date.now() - started).toBeLessThan(1200);
 });
 
 test("una mesa sin cambios no consulta cada 1.5 s", async ({ browser }) => {
   const { beto } = await startMatch(browser);
-  await beto.waitForTimeout(500);
+  await waitForLongPoll(beto);
   const reads = countMatchReads(beto);
+  // Esta espera es la medición misma (ausencia de lecturas durante 6 s), no una sincronización.
   await beto.waitForTimeout(6000);
   // Antes: ~4 lecturas en 6 s. Ahora: el long-poll abierto sigue esperando (≤ 1 nueva).
   expect(reads.count).toBeLessThanOrEqual(1);
@@ -42,7 +43,7 @@ test("una mesa sin cambios no consulta cada 1.5 s", async ({ browser }) => {
 
 test("al ocultar la pestaña corta el long-poll y no consulta; al volver lee enseguida", async ({ browser }) => {
   const { beto } = await startMatch(browser);
-  await beto.waitForTimeout(500); // long-poll abierto
+  await waitForLongPoll(beto);
 
   const aborted = beto.waitForEvent("requestfailed", {
     predicate: (req) => /\/v1\/matches\/[^/]+$/.test(new URL(req.url()).pathname),
@@ -52,6 +53,7 @@ test("al ocultar la pestaña corta el long-poll y no consulta; al volver lee ens
   await aborted; // la conexión en el servidor se libera, no queda colgada 25 s
 
   const reads = countMatchReads(beto);
+  // Medición: en 3 s con la pestaña oculta no debe salir ninguna lectura.
   await beto.waitForTimeout(3000);
   expect(reads.count).toBe(0);
 

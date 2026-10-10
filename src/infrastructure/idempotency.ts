@@ -13,6 +13,14 @@ type Tx = PrismaClient | Prisma.TransactionClient;
  * Envoltura de idempotencia para POST de comandos (sección 5 del spec).
  * Misma (playerId, key) + mismo body → devuelve la respuesta original sin reejecutar `handler`.
  * Misma clave + body distinto → 409 IDEMPOTENCY_CONFLICT.
+ *
+ * La clave se reserva ANTES de ejecutar nada (AUD-05): `INSERT … ON CONFLICT DO NOTHING` espera a que
+ * termine cualquier otra transacción que esté usando la misma clave y después se lee lo que esa dejó.
+ * Antes se buscaba, se ejecutaba y se insertaba al final: dos peticiones con la misma clave sobre
+ * partidas distintas (locks distintos) chocaban en la unicidad y una respondía 500.
+ *
+ * Por eso cada comando llama a esto antes de bloquear partidas o jugadores, y `handler` hace los
+ * bloqueos (orden global: clave → partidas → jugadores; ver application/locks.ts).
  */
 export async function withIdempotency<T>(
   tx: Tx,
@@ -20,12 +28,19 @@ export async function withIdempotency<T>(
   handler: () => Promise<{ status: number; body: T }>,
 ): Promise<{ status: number; body: T; idempotentReplay: boolean }> {
   const requestHash = hashRequest(params.scope, params.requestBody);
+  const where = { playerId_key: { playerId: params.playerId, key: params.key } };
 
-  const existing = await tx.idempotencyRecord.findUnique({
-    where: { playerId_key: { playerId: params.playerId, key: params.key } },
-  });
+  // Dos vueltas como máximo: si la fila con la que chocó se purgó justo después (TTL), se reintenta la reserva.
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const reserved = await tx.idempotencyRecord.createMany({
+      // responseStatus/responseBody se completan abajo, en esta misma transacción: nadie ve el marcador.
+      data: [{ playerId: params.playerId, key: params.key, requestHash, responseStatus: 0, responseBody: {} }],
+      skipDuplicates: true,
+    });
+    if (reserved.count === 1) break;
 
-  if (existing) {
+    const existing = await tx.idempotencyRecord.findUnique({ where });
+    if (!existing) continue;
     if (existing.requestHash !== requestHash) {
       throw new DomainError(
         "IDEMPOTENCY_CONFLICT",
@@ -37,14 +52,9 @@ export async function withIdempotency<T>(
 
   const result = await handler();
 
-  await tx.idempotencyRecord.create({
-    data: {
-      playerId: params.playerId,
-      key: params.key,
-      requestHash,
-      responseStatus: result.status,
-      responseBody: result.body as Prisma.InputJsonValue,
-    },
+  await tx.idempotencyRecord.update({
+    where,
+    data: { responseStatus: result.status, responseBody: result.body as Prisma.InputJsonValue },
   });
 
   return { ...result, idempotentReplay: false };

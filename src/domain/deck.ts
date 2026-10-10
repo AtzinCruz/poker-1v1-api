@@ -13,9 +13,23 @@ export function orderedDeck(): Card[] {
   return deck;
 }
 
+let seedSourceForTests: (() => string) | null = null;
+
+/**
+ * Solo tests (AUD-23): fija las semillas de las manos siguientes para poder afirmar ganador y pago
+ * de un showdown concreto. `null` vuelve al CSPRNG. Fuera de NODE_ENV=test lanza: en producción las
+ * semillas siempre salen de randomBytes.
+ */
+export function setSeedSourceForTests(source: (() => string) | null): void {
+  if (process.env.NODE_ENV !== "test") {
+    throw new Error("setSeedSourceForTests solo puede usarse con NODE_ENV=test");
+  }
+  seedSourceForTests = source;
+}
+
 /** Semilla criptográficamente aleatoria (CSPRNG del servidor, nunca Math.random). */
 export function generateSeed(): string {
-  return randomBytes(32).toString("hex");
+  return seedSourceForTests ? seedSourceForTests() : randomBytes(32).toString("hex");
 }
 
 /**

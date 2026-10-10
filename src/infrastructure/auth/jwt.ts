@@ -4,6 +4,13 @@ import { config } from "../../config.js";
 
 const ALGORITHM = "HS256" as const;
 
+/**
+ * Vida del token de jugador (§8.1 "JWT con expiración corta", AUD-14). El cliente lo renueva antes de
+ * que venza con POST /v1/auth/refresh, que vuelve a comprobar que la sesión no fue revocada.
+ */
+export const PLAYER_TOKEN_TTL_SECONDS = 60 * 60;
+export const ADMIN_TOKEN_TTL_SECONDS = 4 * 60 * 60;
+
 export interface AuthTokenPayload {
   sub: string; // playerId
   displayName: string;
@@ -15,7 +22,7 @@ export interface AuthTokenPayload {
  * que el resto de la API consume igual que si vinieran de un IdP externo.
  */
 export function signPlayerToken(payload: AuthTokenPayload): string {
-  return jwt.sign(payload, config.jwtSecret, { algorithm: ALGORITHM, audience: "player", expiresIn: "12h" });
+  return jwt.sign(payload, config.jwtSecret, { algorithm: ALGORITHM, audience: "player", expiresIn: PLAYER_TOKEN_TTL_SECONDS });
 }
 
 export function verifyPlayerToken(token: string): AuthTokenPayload {
@@ -28,32 +35,50 @@ export function verifyPlayerToken(token: string): AuthTokenPayload {
 
 export interface AdminTokenPayload {
   name: string;
+  /**
+   * true = se entró con la clave compartida (ADMIN_SECRET) y `name` lo declaró quien entró; false = cuenta
+   * propia de ADMIN_ACCOUNTS, cuyo nombre está autenticado por su clave.
+   */
+  shared: boolean;
 }
 
 /**
- * Los tokens de admin se firman con una clave derivada de JWT_SECRET *y* ADMIN_SECRET: conocer solo
- * JWT_SECRET (p. ej. el valor por defecto de .env.example) no alcanza para fabricar un token de admin.
- * Además llevan audience "admin", por lo que nunca se aceptan como token de jugador (y viceversa).
+ * Los tokens de admin se firman con una clave derivada de JWT_SECRET *y* de la clave del admin: conocer
+ * solo JWT_SECRET no alcanza para fabricarlos. Con ADMIN_ACCOUNTS la clave es la de cada cuenta, así que
+ * quitar una cuenta o cambiarle la clave revoca sus tokens y los de nadie más (AUD-20). Además llevan
+ * audience "admin", por lo que nunca se aceptan como token de jugador (y viceversa).
  */
-function adminSigningKey(): string {
-  if (!config.adminSecret) {
-    throw new Error("El panel de administración no está habilitado");
+function adminSigningKey(payload: AdminTokenPayload): string {
+  if (payload.shared) {
+    if (!config.adminSecret) throw new Error("El acceso con clave compartida no está habilitado");
+    return createHmac("sha256", config.jwtSecret).update(`admin-token-key:${config.adminSecret}`).digest("hex");
   }
-  return createHmac("sha256", config.jwtSecret).update(`admin-token-key:${config.adminSecret}`).digest("hex");
+  const account = config.adminAccounts.find((a) => a.name === payload.name);
+  if (!account) throw new Error("Esa cuenta de administrador ya no existe");
+  return createHmac("sha256", config.jwtSecret).update(`admin-account-key:${account.name}:${account.secret}`).digest("hex");
 }
 
-export function signAdminToken(name: string): string {
-  return jwt.sign({ name } satisfies AdminTokenPayload, adminSigningKey(), {
+export function signAdminToken(payload: AdminTokenPayload): string {
+  return jwt.sign(payload satisfies AdminTokenPayload, adminSigningKey(payload), {
     algorithm: ALGORITHM,
     audience: "admin",
-    expiresIn: "4h",
+    expiresIn: ADMIN_TOKEN_TTL_SECONDS,
   });
 }
 
 export function verifyAdminToken(token: string): AdminTokenPayload {
-  const payload = jwt.verify(token, adminSigningKey(), { algorithms: [ALGORITHM], audience: "admin" });
-  if (typeof payload === "string" || typeof payload.name !== "string") {
+  // La clave depende de quién dice ser el token: se lee sin verificar SOLO para elegirla; la firma
+  // (con el algoritmo fijado) se comprueba justo después con esa clave.
+  const claimed = jwt.decode(token);
+  if (!claimed || typeof claimed === "string" || typeof claimed.name !== "string" || typeof claimed.shared !== "boolean") {
     throw new Error("Token de administrador inválido");
   }
-  return payload as unknown as AdminTokenPayload;
+  const payload = jwt.verify(token, adminSigningKey({ name: claimed.name, shared: claimed.shared }), {
+    algorithms: [ALGORITHM],
+    audience: "admin",
+  });
+  if (typeof payload === "string" || payload.name !== claimed.name || payload.shared !== claimed.shared) {
+    throw new Error("Token de administrador inválido");
+  }
+  return { name: claimed.name, shared: claimed.shared };
 }

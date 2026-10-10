@@ -22,7 +22,9 @@
     "prisma:reset": "prisma migrate reset --force --skip-seed",
     "test:e2e": "playwright test",
     "test:coverage": "vitest run --coverage",
-    "loadtest": "node scripts/loadtest.mjs"
+    "loadtest": "node scripts/loadtest.mjs",
+    "reconcile": "node scripts/reconcileBalances.mjs",
+    "test:audit": "vitest run -c test/audit/vitest.config.ts"
   },
   "dependencies": {
     "@fastify/compress": "^9.2.0",

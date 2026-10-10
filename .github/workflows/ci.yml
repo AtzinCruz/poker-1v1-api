@@ -108,7 +108,8 @@ jobs:
       - run: npx prisma migrate deploy
       - name: Levantar la API
         run: |
-          PORT=3100 node --import tsx src/api/start.ts > server.log 2>&1 &
+          # Sin límites de tasa: toda la carga sale de una sola IP (scripts/loadtest.mjs).
+          RATE_LIMIT_DISABLED=true PORT=3100 node --import tsx src/api/start.ts > server.log 2>&1 &
           for i in $(seq 1 60); do curl -sf http://localhost:3100/health/ready && exit 0; sleep 1; done
           cat server.log; exit 1
       # Falla si GET /v1/matches/:id baja del mínimo de req/s o supera el p95 (ver scripts/loadtest.mjs).

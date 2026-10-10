@@ -1,8 +1,10 @@
-import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { FastifyInstance } from "fastify";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { createTestApp, registerPlayer, authHeaders, type TestPlayer } from "../helpers/testApp.js";
 import { resetDatabase } from "../helpers/db.js";
+import { setSeedSourceForTests, shuffleWithSeed } from "../../src/domain/deck.js";
+import { compareScores, referenceScore } from "../audit/reference.js";
 
 let app: FastifyInstance;
 
@@ -64,6 +66,26 @@ beforeEach(async () => {
   await resetDatabase();
 });
 
+afterEach(() => {
+  setSeedSourceForTests(null);
+});
+
+/**
+ * Una semilla cuya mano 1 NO termina en empate si Alice (botón, cartas 0-4) cambia sus dos primeras
+ * (por las cartas 10 y 11) y Bob (cartas 5-9) se planta. Devuelve quién gana según el evaluador de
+ * referencia, independiente del código del servidor (AUD-23).
+ */
+function seedWithWinner(): { seed: string; aliceWins: boolean } {
+  for (let i = 0; ; i++) {
+    const seed = createHash("sha256").update(`fullHand-${i}`).digest("hex");
+    const deck = shuffleWithSeed(seed);
+    const alice = [deck[10]!, deck[11]!, deck[2]!, deck[3]!, deck[4]!];
+    const bob = deck.slice(5, 10);
+    const cmp = compareScores(referenceScore(alice), referenceScore(bob));
+    if (cmp !== 0) return { seed, aliceWins: cmp > 0 };
+  }
+}
+
 afterAll(async () => {
   await app?.close();
 });
@@ -114,10 +136,17 @@ describe("flujo completo de partida", () => {
     app = await createTestApp();
     const alice = await registerPlayer(app, "alice2");
     const bob = await registerPlayer(app, "bob2");
+    // Mazo fijado: se puede afirmar quién gana y cuánto cobra, no solo que hubo showdown (AUD-23).
+    const { seed, aliceWins } = seedWithWinner();
+    setSeedSourceForTests(() => seed);
     const matchId = await createAndJoinMatch(alice, bob);
+    const winner = aliceWins ? alice : bob;
 
     let view = await getView(matchId, alice);
     expect(view.phase).toBe("BETTING_PRE_DRAW");
+    // El compromiso se publica desde el reparto, antes que la semilla (AUD-07).
+    const commitment = view.deckCommitment as string;
+    expect(commitment).toBe(createHash("sha256").update(seed).digest("hex"));
     expect(view.turn.playerId).toBe(alice.id); // el botón actúa primero
 
     // Alice (botón/ciega chica) iguala la ciega grande.
@@ -158,7 +187,21 @@ describe("flujo completo de partida", () => {
     // El showdown liquidó la mano y automáticamente repartió la siguiente (handNumber avanzó).
     view = await getView(matchId, alice);
     expect(view.handNumber).toBe(2);
-    expect(["IN_PROGRESS", "MATCH_FINISHED"]).toContain(view.status);
+    expect(view.status).toBe("IN_PROGRESS");
+    // Pozo de 40 (20 + 20) entero al ganador: neto +20 para él, −20 para el otro (AUD-13: lastHand).
+    expect(view.lastHand).toMatchObject({
+      number: 1,
+      winnerId: winner.id,
+      winReason: "SHOWDOWN",
+      pot: 40,
+      net: aliceWins ? 20 : -20,
+      payout: { you: aliceWins ? 40 : 0, opponent: aliceWins ? 0 : 40 },
+      folderId: null,
+    });
+    expect(view.lastHand.revealedCards.you).toHaveLength(5);
+    // Mano 2: el botón pasa a Bob (ciega chica 10); Alice pone la grande (20).
+    const aliceTotal = view.you.stack + view.you.contribution;
+    expect(aliceTotal).toBe(aliceWins ? 1020 : 980);
 
     const summariesRes = await app.inject({
       method: "GET",
@@ -168,7 +211,12 @@ describe("flujo completo de partida", () => {
     expect(summariesRes.statusCode).toBe(200);
     const summaries = summariesRes.json();
     expect(summaries).toHaveLength(1);
-    expect(["SHOWDOWN", "SPLIT"]).toContain(summaries[0].winReason);
+    expect(summaries[0]).toMatchObject({
+      winReason: "SHOWDOWN",
+      winnerId: winner.id,
+      payoutPlayer1: aliceWins ? 40 : 0,
+      payoutPlayer2: aliceWins ? 0 : 40,
+    });
 
     const auditRes = await app.inject({
       method: "GET",
@@ -177,12 +225,23 @@ describe("flujo completo de partida", () => {
     });
     expect(auditRes.statusCode).toBe(200);
     const audit = auditRes.json();
-    expect(audit.deckSeed).not.toBeNull();
+    // La semilla no se publica mientras siga la partida (AUD-03); el compromiso sí.
+    expect(audit.deckSeed).toBeNull();
+    expect(audit.deckCommitment).toBe(commitment);
     expect(audit.actions.length).toBeGreaterThan(0);
     // player1Id/player2Id permiten al cliente saber qué mano revelada es la suya en el showdown.
     expect([audit.player1Id, audit.player2Id].sort()).toEqual([alice.id, bob.id].sort());
     expect(audit.revealedCards).toHaveProperty("player1");
     expect(audit.revealedCards).toHaveProperty("player2");
+
+    // Al terminar la partida se revela, y coincide con el compromiso publicado al repartir.
+    const resign = await app.inject({ method: "POST", url: `/v1/matches/${matchId}/resign`, headers: authHeaders(bob) });
+    expect(resign.statusCode).toBe(200);
+    const finalAudit = (
+      await app.inject({ method: "GET", url: `/v1/matches/${matchId}/hands/1`, headers: { authorization: `Bearer ${alice.token}` } })
+    ).json();
+    expect(finalAudit.deckSeed).toBe(seed);
+    expect(createHash("sha256").update(finalAudit.deckSeed).digest("hex")).toBe(commitment);
   });
 
   it("un fold entrega el pozo al rival sin showdown (caso de terminación)", async () => {

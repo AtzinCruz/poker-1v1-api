@@ -1,5 +1,7 @@
 import { prisma } from "../infrastructure/prisma/client.js";
-import { tryLockAndLoadMatch } from "./locks.js";
+import { runTransaction } from "../infrastructure/prisma/transaction.js";
+import { config } from "../config.js";
+import { tryLockAndLoadMatch, tryLockAndLoadMatchAfterParent } from "./locks.js";
 import { cancelWaitingMatch } from "./matchService.js";
 import { resolveExpiredTurns } from "./timeouts.js";
 
@@ -12,6 +14,9 @@ export const INVITATION_TTL_MS = 24 * 60 * 60 * 1000;
  */
 export const IDEMPOTENCY_TTL_MS = 24 * 60 * 60 * 1000;
 const PURGE_BATCH = 5000;
+/** Partidas por lote al purgar: cada una arrastra sus manos, acciones y eventos. */
+const MATCH_PURGE_BATCH = 200;
+const DAY_MS = 24 * 60 * 60 * 1000;
 
 /** Partidas por pasada del barrido (cada 15 s). Antes eran 50 sin orden: ~3 partidas/s como máximo. */
 export const SWEEP_BATCH = 200;
@@ -48,7 +53,7 @@ export async function sweepExpiredTurns(
   let processed = 0;
   for (const { matchId } of due) {
     try {
-      const handled = await prisma.$transaction(async (tx) => {
+      const handled = await runTransaction(async (tx) => {
         // SKIP LOCKED: si una petición u otra instancia ya tiene la partida, ella resuelve el turno.
         const match = await tryLockAndLoadMatch(tx, matchId);
         if (!match || match.status !== "IN_PROGRESS") return false;
@@ -78,8 +83,9 @@ export async function expireStaleInvitations(
   let cancelled = 0;
   for (const { id } of stale) {
     try {
-      await prisma.$transaction(async (tx) => {
-        const match = await tryLockAndLoadMatch(tx, id);
+      await runTransaction(async (tx) => {
+        // Si es una revancha, la original se bloquea antes (orden global de locks, AUD-04).
+        const match = await tryLockAndLoadMatchAfterParent(tx, id);
         if (!match || match.status !== "WAITING_FOR_OPPONENT") return;
         await cancelWaitingMatch(tx, match);
         cancelled += 1;
@@ -107,12 +113,52 @@ export async function purgeIdempotencyRecords(ttlMs: number = IDEMPOTENCY_TTL_MS
   }
 }
 
+/**
+ * AUD-19: Action y GameEvent crecían sin límite. Se purgan partidas ENTERAS (con sus manos, acciones
+ * y eventos) terminadas o canceladas hace más de `retentionMs`, en lotes: la auditoría de una partida
+ * reciente nunca queda a medias. Ninguna partida dura tanto (el abandono por desconexión la cierra en
+ * minutos), así que basta mirar createdAt (índice Match.status+createdAt).
+ */
+export async function purgeOldMatches(retentionMs: number = config.matchRetentionDays * DAY_MS): Promise<number> {
+  if (retentionMs <= 0) return 0;
+  const cutoff = new Date(Date.now() - retentionMs);
+  let total = 0;
+  for (;;) {
+    const deleted = await prisma.$transaction(async (tx) => {
+      const old = await tx.match.findMany({
+        where: { status: { in: ["MATCH_FINISHED", "CANCELLED"] }, createdAt: { lt: cutoff } },
+        select: { id: true },
+        take: MATCH_PURGE_BATCH,
+      });
+      const ids = old.map((m) => m.id);
+      if (ids.length === 0) return 0;
+      await tx.gameEvent.deleteMany({ where: { matchId: { in: ids } } });
+      await tx.action.deleteMany({ where: { matchId: { in: ids } } });
+      await tx.hand.deleteMany({ where: { matchId: { in: ids } } });
+      // Una partida que se queda puede apuntar a una revancha que se va: se suelta el vínculo.
+      await tx.match.updateMany({ where: { rematchMatchId: { in: ids } }, data: { rematchMatchId: null } });
+      return (await tx.match.deleteMany({ where: { id: { in: ids } } })).count;
+    });
+    total += deleted;
+    if (deleted < MATCH_PURGE_BATCH) return total;
+  }
+}
+
+/** Registros de ajustes de admin más viejos que la retención (por defecto 2 años; 0 = nunca). */
+export async function purgeAdminActions(retentionMs: number = config.adminActionRetentionDays * DAY_MS): Promise<number> {
+  if (retentionMs <= 0) return 0;
+  const { count } = await prisma.adminAction.deleteMany({ where: { createdAt: { lt: new Date(Date.now() - retentionMs) } } });
+  return count;
+}
+
 /** Las tareas son independientes: si una falla por completo, las demás igual corren. */
 export async function runMaintenance(onError: MaintenanceErrorHandler = logToConsole): Promise<void> {
   for (const [name, task] of [
     ["barrido de turnos vencidos", () => sweepExpiredTurns(new Date(), onError)],
     ["cancelación de invitaciones", () => expireStaleInvitations(INVITATION_TTL_MS, onError)],
     ["purga de idempotencia", () => purgeIdempotencyRecords()],
+    ["purga de partidas viejas", () => purgeOldMatches()],
+    ["purga de registros de admin", () => purgeAdminActions()],
   ] as const) {
     try {
       await task();

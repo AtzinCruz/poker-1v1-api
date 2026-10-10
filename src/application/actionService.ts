@@ -1,5 +1,5 @@
 import type { Hand, Match, Prisma } from "@prisma/client";
-import { prisma } from "../infrastructure/prisma/client.js";
+import { runTransaction } from "../infrastructure/prisma/transaction.js";
 import { withIdempotency } from "../infrastructure/idempotency.js";
 import { notifyMatchChanged } from "../infrastructure/matchNotifier.js";
 import { applyAllIn, applyCheckOrBet } from "../domain/bettingEngine.js";
@@ -11,8 +11,9 @@ import { persistBettingRoundResult, slotToSeat, buttonSlot, toEngineState } from
 import { applyDraw, bumpStateVersion, validateDiscardIndexes } from "./drawPhase.js";
 import { resolveExpiredTurns } from "./timeouts.js";
 import { lockAndLoadMatch } from "./locks.js";
-import { buildMatchView } from "./handQueryService.js";
+import { buildMatchView, previousHandOf } from "./handQueryService.js";
 import { slotOfPlayer } from "./seats.js";
+import { recordAction, type ActionRecordInput } from "./actionLog.js";
 
 export interface SubmitActionInput {
   matchId: string;
@@ -66,24 +67,25 @@ export async function submitAction(input: SubmitActionInput): Promise<SubmitActi
   // sin importar si la acción de este cliente en particular resulta inválida o desactualizada
   // (si ambas cosas vivieran en la misma transacción, un STALE_STATE revertiría también los
   // timeouts ya vencidos de otros turnos).
-  await prisma.$transaction(async (tx) => {
+  await runTransaction(async (tx) => {
     const { match, hand } = await loadMatchAndHand(tx, input.matchId);
     assertBelongsToMatch(match, input.playerId);
     await resolveExpiredTurns(tx, match, hand);
   });
 
-  // Paso 2: procesa la acción de este cliente sobre el estado ya al día.
-  return prisma.$transaction(async (tx) => {
-    let { match, hand } = await loadMatchAndHand(tx, input.matchId);
-    assertBelongsToMatch(match, input.playerId);
-
+  // Paso 2: procesa la acción de este cliente sobre el estado ya al día. La clave de idempotencia
+  // va antes que el lock de la partida (orden global de locks, application/locks.ts).
+  return runTransaction(async (tx) => {
     const result = await withIdempotency(
       tx,
       { playerId: input.playerId, key: input.idempotencyKey, scope: `action:${input.matchId}`, requestBody: input.body },
       async () => {
+        let { match, hand } = await loadMatchAndHand(tx, input.matchId);
+        assertBelongsToMatch(match, input.playerId);
+
         if (input.body.actionVersion !== match.stateVersion) {
           throw new DomainError("STALE_STATE", "actionVersion desactualizado", {
-            currentState: hand ? buildMatchView(match, hand, input.playerId) : null,
+            currentState: hand ? buildMatchView(match, hand, input.playerId, { previousHand: await previousHandOf(tx, match) }) : null,
           });
         }
         if (match.status !== "IN_PROGRESS" || !hand) {
@@ -96,36 +98,25 @@ export async function submitAction(input: SubmitActionInput): Promise<SubmitActi
         }
 
         const actorSlot = slotOfPlayer(match, input.playerId);
-        let actionRecord: { id: string };
+        const record: ActionRecordInput = {
+          handId: hand.id,
+          matchId: match.id,
+          playerId: input.playerId,
+          type: input.body.type,
+          actionVersion: match.stateVersion,
+          idempotencyKey: input.idempotencyKey,
+        };
 
         if (input.body.type === "DRAW") {
           const discardedIndexes = input.body.discardedIndexes ?? [];
           validateDiscardIndexes(discardedIndexes, match.maxDiscard);
           const handAfterDraw = await applyDraw(tx, match, hand, actorSlot, discardedIndexes);
-          actionRecord = await tx.action.create({
-            data: {
-              handId: hand.id,
-              matchId: match.id,
-              playerId: input.playerId,
-              type: "DRAW",
-              discardedIndexes,
-              actionVersion: match.stateVersion,
-            },
-          });
+          record.discardedIndexes = discardedIndexes;
           match = await bumpStateVersion(tx, match);
           const advancedDraw = await advanceAfterDraw(tx, match, handAfterDraw, actorSlot);
           match = advancedDraw.match;
           hand = advancedDraw.hand;
         } else if (input.body.type === "FOLD") {
-          actionRecord = await tx.action.create({
-            data: {
-              handId: hand.id,
-              matchId: match.id,
-              playerId: input.playerId,
-              type: "FOLD",
-              actionVersion: match.stateVersion,
-            },
-          });
           const advanced = await advanceAfterFold(tx, match, hand, actorSlot);
           match = advanced.match;
           hand = advanced.hand;
@@ -138,20 +129,10 @@ export async function submitAction(input: SubmitActionInput): Promise<SubmitActi
             input.body.type === "ALL_IN"
               ? applyAllIn(engineState, seat)
               : applyCheckOrBet(engineState, seat, input.body.amount ?? 0);
+          record.amount =
+            input.body.type === "BET" ? (input.body.amount ?? 0) : bettingResult.state.contributions[seat];
 
-          actionRecord = await tx.action.create({
-            data: {
-              handId: hand.id,
-              matchId: match.id,
-              playerId: input.playerId,
-              type: input.body.type,
-              amount:
-                input.body.type === "BET" ? (input.body.amount ?? 0) : bettingResult.state.contributions[seat],
-              actionVersion: match.stateVersion,
-            },
-          });
-
-          const persisted = await persistBettingRoundResult(tx, match, hand, bettingResult);
+          const persisted = await persistBettingRoundResult(tx, match, hand, bettingResult, input.playerId);
           match = persisted.match;
           hand = persisted.hand;
 
@@ -162,6 +143,7 @@ export async function submitAction(input: SubmitActionInput): Promise<SubmitActi
           }
         }
 
+        const actionRecord = await recordAction(tx, record, { match, hand });
         await notifyMatchChanged(tx, match.id);
         return {
           status: 200,

@@ -78,7 +78,10 @@ function closeOrAdvance(state: BettingRoundState): BettingRoundResult {
   return { state: next, closed };
 }
 
-/** Reembolsa a quien contribuyó de más cuando el rival quedó all-in por menos y ya no puede igualar. */
+/**
+ * Reembolsa a quien contribuyó de más cuando el rival quedó all-in por menos y ya no puede igualar.
+ * Si el reembolso le devuelve fichas, deja de estar all-in (AUD-21): el flag describe el stack real.
+ */
 function refundUncalledExcess(result: BettingRoundResult): BettingRoundResult {
   if (!result.closed) return result;
   const { contributions, allIn } = result.state;
@@ -93,6 +96,7 @@ function refundUncalledExcess(result: BettingRoundResult): BettingRoundResult {
     ...result.state,
     contributions: setAt(contributions, higher, contributions[higher] - excess),
     stacks: setAt(result.state.stacks, higher, result.state.stacks[higher] + excess),
+    allIn: setAt(allIn, higher, false),
   };
   return { ...result, state, refund: { seat: higher, amount: excess } };
 }

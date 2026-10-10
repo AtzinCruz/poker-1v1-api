@@ -95,6 +95,16 @@ describe("bettingEngine: all-in", () => {
     expect(result.state.stacks[0]).toBe(890 + 60);
   });
 
+  it("quien fue all-in por más y recupera el excedente deja de figurar all-in (AUD-21)", () => {
+    const round = createBettingRound({ stacks: [990, 970], contributions: [10, 20], currentBet: 20, lastRaiseSize: 20, toAct: 0 });
+    const shove = applyAllIn(round, 0); // 1000 en total
+    const call = applyAllIn(shove.state, 1); // solo 990
+    expect(call.closed).toBe(true);
+    expect(call.refund).toEqual({ seat: 0, amount: 10 });
+    expect(call.state.stacks).toEqual([10, 0]);
+    expect(call.state.allIn).toEqual([false, true]);
+  });
+
   it("all-in que sube la apuesta obliga al rival a responder", () => {
     const state = preDrawRound();
     const allIn = applyAllIn(state, 0);

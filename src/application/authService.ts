@@ -2,7 +2,7 @@ import { prisma } from "../infrastructure/prisma/client.js";
 import { signPlayerToken } from "../infrastructure/auth/jwt.js";
 import { hashPassword, verifyPassword } from "../infrastructure/auth/password.js";
 import { DomainError } from "../domain/errors.js";
-import { forgetTokenVersion } from "../infrastructure/auth/tokenVersionCache.js";
+import { currentTokenVersion, rememberTokenVersion } from "../infrastructure/auth/tokenVersionCache.js";
 
 export interface SessionResult {
   token: string;
@@ -28,10 +28,18 @@ function toSession(player: { id: string; displayName: string; fictionalBalance: 
  *    asignarle una contraseña temporal (así nadie se adelanta a la dueña/o de la cuenta).
  * No hay verificación de identidad más allá de la contraseña: no es un IdP real.
  */
-export async function loginOrRegister(displayName: string, password: string): Promise<SessionResult> {
+export async function loginOrRegister(
+  displayName: string,
+  password: string,
+  hooks: {
+    /** Antes de crear una cuenta nueva: el límite de altas por IP (AUD-22) lanza RATE_LIMITED aquí. */
+    beforeRegister?: () => Promise<void>;
+  } = {},
+): Promise<SessionResult> {
   let player = await prisma.player.findUnique({ where: { displayName } });
 
   if (!player) {
+    await hooks.beforeRegister?.();
     const passwordHash = await hashPassword(password);
     try {
       player = await prisma.player.create({ data: { displayName, passwordHash } });
@@ -66,6 +74,22 @@ export async function changePassword(playerId: string, currentPassword: string, 
     where: { id: playerId },
     data: { passwordHash, tokenVersion: { increment: 1 } },
   });
-  forgetTokenVersion(playerId);
+  // La caché nunca baja de versión: una lectura concurrente que vio la vieja no la revive (AUD-14).
+  rememberTokenVersion(playerId, updated.tokenVersion);
   return toSession(updated);
+}
+
+/**
+ * Renueva la sesión antes de que venza el token (que dura poco, §8.1). Solo con un token todavía
+ * válido y no revocado: cambiar o restablecer la contraseña corta también la renovación.
+ */
+export async function refreshSession(playerId: string, tokenVersion: number): Promise<SessionResult> {
+  if ((await currentTokenVersion(playerId)) !== tokenVersion) {
+    throw new DomainError("UNAUTHENTICATED", "La sesión ya no es válida; vuelve a entrar");
+  }
+  const player = await prisma.player.findUnique({ where: { id: playerId } });
+  if (!player || player.tokenVersion !== tokenVersion) {
+    throw new DomainError("UNAUTHENTICATED", "La sesión ya no es válida; vuelve a entrar");
+  }
+  return toSession(player);
 }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { assertSecretsAreStrong } from "../../src/config.js";
+import { assertSecretsAreStrong, parseAdminAccounts, parseRateLimitEnabled, parseTrustProxyHops } from "../../src/config.js";
 
 const STRONG_JWT = "a".repeat(40);
 const STRONG_ADMIN = "b".repeat(20);
@@ -21,5 +21,46 @@ describe("assertSecretsAreStrong", () => {
     for (const nodeEnv of ["development", "test"]) {
       expect(() => assertSecretsAreStrong({ nodeEnv, jwtSecret: "dev-secret-change-me", adminSecret: "cambia-esto-en-produccion" })).not.toThrow();
     }
+  });
+});
+
+describe("proxies de confianza (AUD-02)", () => {
+  it("por defecto 0: X-Forwarded-For no cuenta salvo que se configure", () => {
+    expect(parseTrustProxyHops(undefined)).toBe(0);
+    expect(parseTrustProxyHops("")).toBe(0);
+    expect(parseTrustProxyHops("2")).toBe(2);
+  });
+
+  it("rechaza valores que no son un número de saltos", () => {
+    for (const bad of ["true", "-1", "1.5", "11", "uno"]) expect(() => parseTrustProxyHops(bad)).toThrow(/TRUST_PROXY_HOPS/);
+  });
+});
+
+describe("apagar los límites de tasa", () => {
+  it("solo en development/test", () => {
+    expect(parseRateLimitEnabled(undefined, "production")).toBe(true);
+    expect(parseRateLimitEnabled("true", "test")).toBe(false);
+    expect(() => parseRateLimitEnabled("true", "production")).toThrow(/RATE_LIMIT_DISABLED/);
+    expect(() => parseRateLimitEnabled("true", undefined)).toThrow(/RATE_LIMIT_DISABLED/);
+  });
+});
+
+describe("cuentas de admin (AUD-20)", () => {
+  it("lee nombre:clave separados por comas", () => {
+    expect(parseAdminAccounts(undefined)).toEqual([]);
+    expect(parseAdminAccounts("ana:clave-de-ana-123456, beto:otra:con:dos-puntos")).toEqual([
+      { name: "ana", secret: "clave-de-ana-123456" },
+      { name: "beto", secret: "otra:con:dos-puntos" },
+    ]);
+    expect(() => parseAdminAccounts("sin-clave")).toThrow(/ADMIN_ACCOUNTS/);
+    expect(() => parseAdminAccounts("ana:a,ana:b")).toThrow(/repetidos/);
+  });
+
+  it("fuera de development/test exige claves fuertes también por cuenta", () => {
+    const weak = [{ name: "ana", secret: "corta" }];
+    expect(() => assertSecretsAreStrong({ nodeEnv: "production", jwtSecret: STRONG_JWT, adminSecret: null, adminAccounts: weak })).toThrow(/ana/);
+    expect(() =>
+      assertSecretsAreStrong({ nodeEnv: "production", jwtSecret: STRONG_JWT, adminSecret: null, adminAccounts: [{ name: "ana", secret: STRONG_ADMIN }] }),
+    ).not.toThrow();
   });
 });

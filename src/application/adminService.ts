@@ -1,10 +1,13 @@
 import { createHash, randomInt, timingSafeEqual } from "node:crypto";
 import { prisma } from "../infrastructure/prisma/client.js";
-import { signAdminToken } from "../infrastructure/auth/jwt.js";
+import { runTransaction } from "../infrastructure/prisma/transaction.js";
+import { withIdempotency } from "../infrastructure/idempotency.js";
+import { signAdminToken, type AdminTokenPayload } from "../infrastructure/auth/jwt.js";
 import { hashPassword } from "../infrastructure/auth/password.js";
-import { forgetTokenVersion } from "../infrastructure/auth/tokenVersionCache.js";
+import { rememberTokenVersion } from "../infrastructure/auth/tokenVersionCache.js";
 import { config } from "../config.js";
 import { DomainError } from "../domain/errors.js";
+import { lockPlayers } from "./locks.js";
 
 /** Comparación en tiempo constante (sobre digests, para no filtrar la longitud de la clave). */
 function safeEqual(a: string, b: string): boolean {
@@ -13,15 +16,35 @@ function safeEqual(a: string, b: string): boolean {
   return timingSafeEqual(da, db);
 }
 
-/** Login de administrador: requiere conocer ADMIN_SECRET (variable de entorno del servidor). */
+/**
+ * Login de administrador (AUD-20):
+ *  - con una cuenta de ADMIN_ACCOUNTS, nombre y clave tienen que corresponderse: el nombre que queda
+ *    en AdminAction está autenticado;
+ *  - con la clave compartida ADMIN_SECRET el nombre lo declara quien entra (modo heredado); en el
+ *    registro de auditoría queda marcado como tal.
+ * Se comparan todas las claves siempre, para que el tiempo de respuesta no delate qué nombres existen.
+ */
 export function createAdminSession(name: string, secret: string): { token: string; name: string } {
-  if (!config.adminSecret) {
+  if (!config.adminSecret && config.adminAccounts.length === 0) {
     throw new DomainError("UNAUTHENTICATED", "El panel de administración no está habilitado en este servidor");
   }
-  if (!safeEqual(secret, config.adminSecret)) {
-    throw new DomainError("UNAUTHENTICATED", "Clave de administrador incorrecta");
+  let payload: AdminTokenPayload | null = null;
+  for (const account of config.adminAccounts) {
+    const matches = safeEqual(secret, account.secret);
+    if (matches && account.name === name && !payload) payload = { name: account.name, shared: false };
   }
-  return { token: signAdminToken(name), name };
+  if (!payload && config.adminSecret && safeEqual(secret, config.adminSecret)) {
+    payload = { name, shared: true };
+  }
+  if (!payload) {
+    throw new DomainError("UNAUTHENTICATED", "Nombre o clave de administrador incorrectos");
+  }
+  return { token: signAdminToken(payload), name };
+}
+
+/** Nombre que queda en AdminAction: el de una cuenta propia, o el declarado marcado como no verificado. */
+export function auditName(admin: AdminTokenPayload): string {
+  return admin.shared ? `${admin.name} (clave compartida)` : admin.name;
 }
 
 export interface AdminPlayerRow {
@@ -86,44 +109,62 @@ export async function listAllMatches(): Promise<AdminMatchRow[]> {
 /** Tope para no desbordar la columna Int (32 bits) de Postgres con ajustes repetidos. */
 export const MAX_FICTIONAL_BALANCE = 2_000_000_000;
 
-/** Acredita `amount` fichas ficticias al saldo disponible de un jugador y deja registro de auditoría. */
-export async function addPlayerBalance(playerId: string, amount: number, adminName: string): Promise<AdminPlayerRow> {
+/**
+ * Acredita `amount` fichas ficticias al saldo disponible de un jugador y deja registro de auditoría.
+ * Incremento atómico con el tope en la misma sentencia (AUD-01) e idempotente: un doble clic con la
+ * misma Idempotency-Key acredita una sola vez (AUD-20). La clave se guarda a nombre del jugador
+ * acreditado; el scope incluye al admin, así que otro admin con la misma clave recibe 409.
+ */
+export async function addPlayerBalance(
+  playerId: string,
+  amount: number,
+  adminName: string,
+  idempotencyKey: string,
+): Promise<AdminPlayerRow> {
   if (!Number.isInteger(amount) || amount <= 0) {
     throw new DomainError("INVALID_ACTION", "El monto a agregar debe ser un entero positivo");
   }
-  return prisma.$transaction(async (tx) => {
-    await tx.$queryRaw`SELECT id FROM "Player" WHERE id = ${playerId} FOR UPDATE`;
-    const player = await tx.player.findUnique({ where: { id: playerId } });
-    if (!player) {
-      throw new DomainError("INVALID_ACTION", "El jugador no existe");
-    }
-    const balanceAfter = player.fictionalBalance + amount;
-    if (balanceAfter > MAX_FICTIONAL_BALANCE) {
-      throw new DomainError("INVALID_ACTION", `El saldo no puede superar ${MAX_FICTIONAL_BALANCE} fichas`);
-    }
-    const updated = await tx.player.update({
-      where: { id: playerId },
-      data: { fictionalBalance: balanceAfter },
-    });
-    await tx.adminAction.create({
-      data: {
-        adminName,
-        type: "ADD_BALANCE",
-        playerId,
-        amount,
-        balanceBefore: player.fictionalBalance,
-        balanceAfter,
+  const exists = await prisma.player.findUnique({ where: { id: playerId }, select: { id: true } });
+  if (!exists) {
+    throw new DomainError("INVALID_ACTION", "El jugador no existe");
+  }
+  const result = await runTransaction((tx) =>
+    withIdempotency(
+      tx,
+      { playerId, key: idempotencyKey, scope: `admin-add-balance:${adminName}`, requestBody: { amount } },
+      async () => {
+        await lockPlayers(tx, [playerId]);
+        const credited = await tx.player.updateMany({
+          where: { id: playerId, fictionalBalance: { lte: MAX_FICTIONAL_BALANCE - amount } },
+          data: { fictionalBalance: { increment: amount } },
+        });
+        if (credited.count === 0) {
+          throw new DomainError("INVALID_ACTION", `El saldo no puede superar ${MAX_FICTIONAL_BALANCE} fichas`);
+        }
+        const updated = await tx.player.findUniqueOrThrow({ where: { id: playerId } });
+        await tx.adminAction.create({
+          data: {
+            adminName,
+            type: "ADD_BALANCE",
+            playerId,
+            amount,
+            balanceBefore: updated.fictionalBalance - amount,
+            balanceAfter: updated.fictionalBalance,
+          },
+        });
+        const row: AdminPlayerRow = {
+          id: updated.id,
+          displayName: updated.displayName,
+          hasPassword: updated.passwordHash !== null,
+          fictionalBalance: updated.fictionalBalance,
+          blockedBalance: updated.blockedBalance,
+          createdAt: updated.createdAt.toISOString(),
+        };
+        return { status: 200, body: row };
       },
-    });
-    return {
-      id: updated.id,
-      displayName: updated.displayName,
-      hasPassword: updated.passwordHash !== null,
-      fictionalBalance: updated.fictionalBalance,
-      blockedBalance: updated.blockedBalance,
-      createdAt: updated.createdAt.toISOString(),
-    };
-  });
+    ),
+  );
+  return result.body;
 }
 
 /**
@@ -148,8 +189,8 @@ export async function resetPlayerPassword(
 ): Promise<AdminPlayerRow & { temporaryPassword: string }> {
   const temporaryPassword = generateTemporaryPassword();
   const passwordHash = await hashPassword(temporaryPassword);
-  const result = await prisma.$transaction(async (tx) => {
-    await tx.$queryRaw`SELECT id FROM "Player" WHERE id = ${playerId} FOR UPDATE`;
+  const result = await runTransaction(async (tx) => {
+    await lockPlayers(tx, [playerId]);
     const player = await tx.player.findUnique({ where: { id: playerId } });
     if (!player) {
       throw new DomainError("INVALID_ACTION", "El jugador no existe");
@@ -169,16 +210,19 @@ export async function resetPlayerPassword(
       },
     });
     return {
-      id: updated.id,
-      displayName: updated.displayName,
-      hasPassword: true,
-      fictionalBalance: updated.fictionalBalance,
-      blockedBalance: updated.blockedBalance,
-      createdAt: updated.createdAt.toISOString(),
-      temporaryPassword,
+      row: {
+        id: updated.id,
+        displayName: updated.displayName,
+        hasPassword: true,
+        fictionalBalance: updated.fictionalBalance,
+        blockedBalance: updated.blockedBalance,
+        createdAt: updated.createdAt.toISOString(),
+        temporaryPassword,
+      },
+      tokenVersion: updated.tokenVersion,
     };
   });
-  // Después del COMMIT: invalidar antes dejaría que una petición concurrente volviera a cachear la versión vieja.
-  forgetTokenVersion(playerId);
-  return result;
+  // Después del COMMIT: la caché nunca baja de versión, así que una lectura concurrente no revive la vieja.
+  rememberTokenVersion(playerId, result.tokenVersion);
+  return result.row;
 }

@@ -1,11 +1,12 @@
 import type { Hand, Match, Prisma } from "@prisma/client";
 import { formatCard, parseCard } from "../domain/card.js";
+import { blindsForHand } from "../domain/blinds.js";
 import { commitSeed, generateSeed, shuffleWithSeed } from "../domain/deck.js";
 import { compareHandRank, evaluateHand } from "../domain/handEvaluator.js";
 import type { HandWinReason } from "../domain/types.js";
 import { getMatchStack, otherSlot, slotOfPlayer, slotUpdate, type Slot } from "./seats.js";
-import { refundReservedStack } from "./walletSettlement.js";
-import { firstActorForNewRound } from "./bettingRound.js";
+import { finishMatch } from "./matchEnd.js";
+import { firstActorForNewRound, logTurnStarted } from "./bettingRound.js";
 
 type Tx = Prisma.TransactionClient;
 
@@ -30,11 +31,13 @@ export async function dealNewHand(tx: Tx, matchIn: Match): Promise<DealResult> {
   const otherSlotValue = otherSlot(buttonSlot);
   const buttonStack = getMatchStack(matchIn, buttonSlot);
   const otherStack = getMatchStack(matchIn, otherSlotValue);
+  // Con ciegas incrementales, las de la mano que se va a repartir (pueden haber subido de nivel).
+  const blinds = blindsForHand(matchIn, matchIn.handNumber + 1);
 
   // Sección 2.1/9 del spec: la sesión termina cuando un jugador no puede cubrir "la ciega grande
   // requerida para participar en la siguiente mano" — vale para ambos, sea cual sea su posición.
-  const buttonCovers = buttonStack >= matchIn.bigBlind;
-  const otherCovers = otherStack >= matchIn.bigBlind;
+  const buttonCovers = buttonStack >= blinds.big;
+  const otherCovers = otherStack >= blinds.big;
   if (!buttonCovers || !otherCovers) {
     const winnerSlot = buttonCovers
       ? buttonSlot
@@ -44,36 +47,12 @@ export async function dealNewHand(tx: Tx, matchIn: Match): Promise<DealResult> {
           ? buttonSlot
           : otherSlotValue;
     const winnerId = winnerSlot === "player1" ? matchIn.player1Id : matchIn.player2Id!;
-    const match = await tx.match.update({
-      where: { id: matchIn.id },
-      data: {
-        status: "MATCH_FINISHED",
-        finishReason: "INSUFFICIENT_STACK",
-        winnerId,
-        stateVersion: { increment: 1 },
-      },
-    });
-    await refundReservedStack(tx, {
-      playerId: matchIn.player1Id,
-      reservedAmount: matchIn.startingStack,
-      finalStack: matchIn.player1Stack ?? matchIn.startingStack,
-    });
-    await refundReservedStack(tx, {
-      playerId: matchIn.player2Id!,
-      reservedAmount: matchIn.startingStack,
-      finalStack: matchIn.player2Stack ?? matchIn.startingStack,
-    });
-
-    await tx.gameEvent.create({
-      data: {
-        matchId: match.id,
-        type: "match.finished",
-        stateVersion: match.stateVersion,
-        publicPayload: {
-          winnerId,
-          reason: "INSUFFICIENT_STACK",
-          finalStacks: { player1: match.player1Stack, player2: match.player2Stack },
-        },
+    const match = await finishMatch(tx, matchIn, {
+      reason: "INSUFFICIENT_STACK",
+      winnerId,
+      finalStacks: {
+        player1: matchIn.player1Stack ?? matchIn.startingStack,
+        player2: matchIn.player2Stack ?? matchIn.startingStack,
       },
     });
     return { hand: null, match, matchFinished: true };
@@ -89,8 +68,8 @@ export async function dealNewHand(tx: Tx, matchIn: Match): Promise<DealResult> {
 
   const player1Cards = buttonSlot === "player1" ? buttonCards : otherCards;
   const player2Cards = buttonSlot === "player1" ? otherCards : buttonCards;
-  const player1Contribution = buttonSlot === "player1" ? matchIn.smallBlind : matchIn.bigBlind;
-  const player2Contribution = buttonSlot === "player1" ? matchIn.bigBlind : matchIn.smallBlind;
+  const player1Contribution = buttonSlot === "player1" ? blinds.small : blinds.big;
+  const player2Contribution = buttonSlot === "player1" ? blinds.big : blinds.small;
   const player1StackAfterBlind = matchIn.player1Stack! - player1Contribution;
   const player2StackAfterBlind = matchIn.player2Stack! - player2Contribution;
   // Ambos cubren la ciega grande (se verificó arriba), así que solo quien postea la ciega grande puede
@@ -127,8 +106,8 @@ export async function dealNewHand(tx: Tx, matchIn: Match): Promise<DealResult> {
       deckCommitment: commitment,
       deckSeed: seed,
       pot: player1Contribution + player2Contribution,
-      currentBet: match.bigBlind,
-      lastFullRaise: match.bigBlind,
+      currentBet: blinds.big,
+      lastFullRaise: blinds.big,
       player1Cards: player1Cards.map(formatCard),
       player2Cards: player2Cards.map(formatCard),
       player1Contribution,
@@ -148,11 +127,13 @@ export async function dealNewHand(tx: Tx, matchIn: Match): Promise<DealResult> {
       handId: hand.id,
       type: "hand.dealt",
       stateVersion: match.stateVersion,
-      publicPayload: { handNumber: hand.number, dealerPlayerId: buttonId },
+      // El compromiso se publica al repartir, antes de que nadie actúe (AUD-07).
+      publicPayload: { handNumber: hand.number, dealerPlayerId: buttonId, deckCommitment: commitment, blinds: { small: blinds.small, big: blinds.big } },
       player1Payload: { yourCards: player1Cards.map(formatCard), opponentCardCount: 5 },
       player2Payload: { yourCards: player2Cards.map(formatCard), opponentCardCount: 5 },
     },
   });
+  await logTurnStarted(tx, match, hand);
 
   return { hand, match, matchFinished: false };
 }
@@ -238,7 +219,7 @@ export async function finishHand(
       winReason: outcome.reason,
       payoutPlayer1: outcome.payoutPlayer1,
       payoutPlayer2: outcome.payoutPlayer2,
-      deckSeedRevealedAt: new Date(),
+      // La semilla NO se revela aquí sino al terminar la partida (matchEnd.ts, AUD-03).
       revealedCards,
       toActPlayerId: null,
       turnExpiresAt: null,
@@ -256,7 +237,6 @@ export async function finishHand(
         reason: outcome.reason,
         payout: { player1: outcome.payoutPlayer1, player2: outcome.payoutPlayer2 },
         revealedCards: revealedCards ?? null,
-        deckSeed: hand.deckSeed,
       },
     },
   });

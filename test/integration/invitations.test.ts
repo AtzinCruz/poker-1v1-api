@@ -39,7 +39,7 @@ describe("GET /v1/invitations", () => {
     expect(invites[0].joinToken).toBe(match.joinToken);
     expect(invites[0].creatorId).toBe(alice.id);
     expect(invites[0].creatorDisplayName).toBe("alice-invite");
-    expect(invites[0].rules).toEqual({ startingStack: 1000, smallBlind: 10, bigBlind: 20 });
+    expect(invites[0].rules).toEqual({ startingStack: 1000, smallBlind: 10, bigBlind: 20, blindIncrement: 0, blindLevelHands: 3 });
 
     // Alice no tiene invitaciones pendientes (ella es quien invitó, no la invitada).
     const aliceInvites = await app.inject({

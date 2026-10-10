@@ -23,6 +23,8 @@ export interface SlotHandView {
   contribution: number;
   roundStartContribution: number;
   discarded: boolean;
+  /** Cuántas cartas cambió en el draw; null hasta que lo hace. Es información pública. */
+  discardedCount: number | null;
   folded: boolean;
   allIn: boolean;
   actedInRound: boolean;
@@ -36,6 +38,7 @@ export function readSlot(hand: Hand, slot: Slot): SlotHandView {
       contribution: hand.player1Contribution,
       roundStartContribution: hand.player1RoundStartContribution,
       discarded: hand.player1Discarded,
+      discardedCount: hand.player1DiscardedCount,
       folded: hand.player1Folded,
       allIn: hand.player1AllIn,
       actedInRound: hand.player1ActedInRound,
@@ -46,6 +49,7 @@ export function readSlot(hand: Hand, slot: Slot): SlotHandView {
     contribution: hand.player2Contribution,
     roundStartContribution: hand.player2RoundStartContribution,
     discarded: hand.player2Discarded,
+    discardedCount: hand.player2DiscardedCount,
     folded: hand.player2Folded,
     allIn: hand.player2AllIn,
     actedInRound: hand.player2ActedInRound,
@@ -62,6 +66,7 @@ export function slotUpdate(slot: Slot, patch: Partial<SlotHandView>): Record<str
   if (patch.contribution !== undefined) set("Contribution", patch.contribution);
   if (patch.roundStartContribution !== undefined) set("RoundStartContribution", patch.roundStartContribution);
   if (patch.discarded !== undefined) set("Discarded", patch.discarded);
+  if (patch.discardedCount !== undefined) set("DiscardedCount", patch.discardedCount);
   if (patch.folded !== undefined) set("Folded", patch.folded);
   if (patch.allIn !== undefined) set("AllIn", patch.allIn);
   if (patch.actedInRound !== undefined) set("ActedInRound", patch.actedInRound);
