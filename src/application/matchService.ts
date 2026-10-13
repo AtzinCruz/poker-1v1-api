@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import type { Match, Prisma } from "@prisma/client";
 import { prisma } from "../infrastructure/prisma/client.js";
 import { runTransaction } from "../infrastructure/prisma/transaction.js";
@@ -22,7 +22,8 @@ export interface CreateMatchInput {
     bigBlind: number;
     turnTimeoutSeconds?: number;
     incrementalBlinds?: boolean;
-    inviteeId: string;
+    /** Sin invitado: invitación por enlace (se une quien abra el enlace con el joinToken). */
+    inviteeId?: string;
   };
 }
 
@@ -71,8 +72,8 @@ export interface MatchRulesInput {
   blindLevelHands: number;
 }
 
-/** Crea una partida esperando al invitado y reserva la entrada de quien la crea. */
-async function createWaitingMatchInTx(tx: Tx, creatorId: string, inviteeId: string, rules: MatchRulesInput): Promise<Match> {
+/** Crea una partida esperando al invitado (o a quien abra el enlace, si es null) y reserva la entrada de quien la crea. */
+async function createWaitingMatchInTx(tx: Tx, creatorId: string, inviteeId: string | null, rules: MatchRulesInput): Promise<Match> {
   await reserveStack(tx, creatorId, rules.startingStack);
   return tx.match.create({
     data: {
@@ -113,15 +114,17 @@ export async function createMatch(
       async () => {
         const { startingStack, smallBlind, bigBlind, turnTimeoutSeconds, incrementalBlinds, inviteeId } = input.body;
 
-        if (inviteeId === input.creatorId) {
-          throw new DomainError("INVALID_ACTION", "No puedes invitarte a ti mismo");
-        }
-        const invitee = await tx.player.findUnique({ where: { id: inviteeId } });
-        if (!invitee) {
-          throw new DomainError("INVALID_ACTION", "El jugador invitado no existe");
+        if (inviteeId !== undefined) {
+          if (inviteeId === input.creatorId) {
+            throw new DomainError("INVALID_ACTION", "No puedes invitarte a ti mismo");
+          }
+          const invitee = await tx.player.findUnique({ where: { id: inviteeId } });
+          if (!invitee) {
+            throw new DomainError("INVALID_ACTION", "El jugador invitado no existe");
+          }
         }
 
-        const match = await createWaitingMatchInTx(tx, input.creatorId, inviteeId, {
+        const match = await createWaitingMatchInTx(tx, input.creatorId, inviteeId ?? null, {
           startingStack,
           smallBlind,
           bigBlind,
@@ -156,14 +159,22 @@ export async function joinMatch(
         const match = await lockAndLoadMatch(tx, input.matchId);
         if (!match) throw new DomainError("MATCH_NOT_FOUND", "La partida no existe");
         // Primero la invitación y después el estado (AUD-15): un no invitado recibe siempre 403 y no
-        // puede distinguir partidas ajenas en espera de partidas ya empezadas.
-        if (match.inviteeId !== input.playerId) {
+        // puede distinguir partidas ajenas en espera de partidas ya empezadas. En una invitación por
+        // enlace "estar invitado" es tener el token del enlace.
+        if (match.inviteeId === null) {
+          if (!sameToken(match.joinToken, input.body.joinToken)) {
+            throw new DomainError("NOT_MATCH_PLAYER", "Este enlace de invitación no es válido");
+          }
+          if (match.player1Id === input.playerId) {
+            throw new DomainError("INVALID_ACTION", "No puedes unirte a tu propia partida: comparte el enlace con tu rival");
+          }
+        } else if (match.inviteeId !== input.playerId) {
           throw new DomainError("NOT_MATCH_PLAYER", "Este jugador no fue invitado a esta partida");
         }
         if (match.status !== "WAITING_FOR_OPPONENT") {
           throw new DomainError("INVALID_ACTION", "La partida ya no acepta un segundo jugador");
         }
-        if (match.joinToken !== input.body.joinToken) {
+        if (!sameToken(match.joinToken, input.body.joinToken)) {
           throw new DomainError("INVALID_ACTION", "Token de invitación inválido");
         }
 
@@ -174,6 +185,52 @@ export async function joinMatch(
 
     return { ...result };
   });
+}
+
+/** Comparación en tiempo constante del token de invitación (sobre digests: no filtra la longitud). */
+function sameToken(expected: string, given: string): boolean {
+  const a = createHash("sha256").update(expected).digest();
+  const b = createHash("sha256").update(given).digest();
+  return timingSafeEqual(a, b);
+}
+
+export interface InvitationPreview {
+  matchId: string;
+  status: Match["status"];
+  creatorDisplayName: string;
+  rules: Invitation["rules"];
+  /** Ya estás sentado en esta partida (la creaste o ya te uniste): abrir la mesa, no unirse. */
+  youAreIn: boolean;
+  /** Puedes aceptarla: sigue esperando rival y es para ti (por enlace, para cualquiera con el token). */
+  canJoin: boolean;
+}
+
+/**
+ * Lo que muestra el enlace de invitación antes de aceptar (unirse reserva saldo: no se hace sin
+ * preguntar). Hace falta el token del enlace; sin él, o si la partida no existe, la misma respuesta 404:
+ * no se puede sondear qué partidas existen.
+ */
+export async function previewInvitation(playerId: string, matchId: string, joinToken: string): Promise<InvitationPreview> {
+  const match = await prisma.match.findUnique({ where: { id: matchId }, include: { player1: { select: { displayName: true } } } });
+  if (!match || !sameToken(match.joinToken, joinToken)) {
+    throw new DomainError("MATCH_NOT_FOUND", "La invitación no existe o el enlace no es válido");
+  }
+  const youAreIn = match.player1Id === playerId || match.player2Id === playerId;
+  return {
+    matchId: match.id,
+    status: match.status,
+    creatorDisplayName: match.player1.displayName,
+    rules: {
+      startingStack: match.startingStack,
+      smallBlind: match.smallBlind,
+      bigBlind: match.bigBlind,
+      blindIncrement: match.blindIncrement,
+      blindLevelHands: match.blindLevelHands,
+    },
+    youAreIn,
+    canJoin:
+      match.status === "WAITING_FOR_OPPONENT" && !youAreIn && (match.inviteeId === null || match.inviteeId === playerId),
+  };
 }
 
 export interface ResignInput {
@@ -290,8 +347,10 @@ export async function listPendingInvitations(playerId: string): Promise<Invitati
 export interface ActiveMatchSummary {
   matchId: string;
   status: "WAITING_FOR_OPPONENT" | "IN_PROGRESS";
-  /** Rival en la mesa o, si todavía no se unió, el jugador invitado. */
+  /** Rival en la mesa o, si todavía no se unió, el jugador invitado (null en una invitación por enlace). */
   opponentName: string | null;
+  /** Espera a quien abra el enlace de invitación, no a un jugador concreto. */
+  inviteByLink: boolean;
   handNumber: number;
   yourTurn: boolean;
   updatedAt: string;
@@ -317,7 +376,7 @@ export async function listActiveMatches(playerId: string): Promise<ActiveMatchSu
   });
   if (matches.length === 0) return [];
 
-  const waitingInviteeIds = matches.filter((m) => !m.player2Id).map((m) => m.inviteeId);
+  const waitingInviteeIds = matches.flatMap((m) => (!m.player2Id && m.inviteeId ? [m.inviteeId] : []));
   const [invitees, hands] = await Promise.all([
     waitingInviteeIds.length
       ? prisma.player.findMany({ where: { id: { in: waitingInviteeIds } }, select: { id: true, displayName: true } })
@@ -332,7 +391,7 @@ export async function listActiveMatches(playerId: string): Promise<ActiveMatchSu
 
   return matches.map((m) => {
     const opponentName = !m.player2Id
-      ? (inviteeName.get(m.inviteeId) ?? null)
+      ? (m.inviteeId ? (inviteeName.get(m.inviteeId) ?? null) : null)
       : m.player1Id === playerId
         ? (m.player2?.displayName ?? null)
         : m.player1.displayName;
@@ -340,6 +399,7 @@ export async function listActiveMatches(playerId: string): Promise<ActiveMatchSu
       matchId: m.id,
       status: m.status as ActiveMatchSummary["status"],
       opponentName,
+      inviteByLink: !m.player2Id && m.inviteeId === null,
       handNumber: m.handNumber,
       yourTurn: m.status === "IN_PROGRESS" && toActByMatch.get(m.id) === playerId,
       updatedAt: m.updatedAt.toISOString(),

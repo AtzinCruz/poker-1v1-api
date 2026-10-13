@@ -67,6 +67,8 @@ export function playerLimits(app: FastifyInstance) {
     matchRead: preHandler(createLimit(app, { max: 240, timeWindow: MINUTE, key: matchKey })),
     /** Crear partidas (cada una reserva saldo). */
     createMatch: preHandler(createLimit(app, { max: 20, timeWindow: MINUTE, key: playerKey })),
+    /** Ver una invitación por enlace antes de aceptarla. */
+    invitationPreview: preHandler(createLimit(app, { max: 30, timeWindow: MINUTE, key: playerKey })),
     /** Cambio de contraseña y renovación de sesión, por cuenta. */
     session: preHandler(createLimit(app, { max: 10, timeWindow: MINUTE, key: playerKey })),
     /**

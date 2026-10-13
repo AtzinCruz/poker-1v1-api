@@ -40,6 +40,11 @@ export interface MatchView {
   legalActions: LegalActionView[];
   /** Resultado de la última mano terminada (§7 hand.finished), también la que cerró la partida (AUD-13). */
   lastHand: LastHandView | null;
+  /**
+   * Solo para quien creó una invitación por enlace, mientras espera rival: el token para rearmar el
+   * enlace (p. ej. tras recargar). Nadie más lo recibe en la vista.
+   */
+  linkInvitation: { joinToken: string } | null;
   finishReason?: string | null;
   winnerId?: string | null;
   /** Solo en partidas terminadas: la revancha pedida desde esta partida, si existe. */
@@ -152,6 +157,10 @@ export function buildMatchView(match: Match, hand: Hand | null, playerId: string
     turn: hand?.toActPlayerId && hand.turnExpiresAt ? { playerId: hand.toActPlayerId, expiresAt: hand.turnExpiresAt.toISOString() } : null,
     legalActions: legalActionsFor(match, hand, playerId),
     lastHand: finishedHand ? lastHandView(match, finishedHand, slot) : null,
+    linkInvitation:
+      match.status === "WAITING_FOR_OPPONENT" && match.inviteeId === null && playerId === match.player1Id
+        ? { joinToken: match.joinToken }
+        : null,
     finishReason: match.finishReason,
     winnerId: match.winnerId,
     rules: {

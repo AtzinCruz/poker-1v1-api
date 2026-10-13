@@ -7,6 +7,11 @@
 
 const SESSION_KEY = "poker_session_v1";
 const OPEN_TABLES_KEY = "poker_open_tables_v1";
+// Enlace de invitación: /#unirse=<matchId>.<joinToken>. En el fragmento (#), que el navegador no manda al
+// servidor: el token no queda en logs de acceso ni en el Referer.
+const INVITE_HASH_RE = /^#unirse=([A-Za-z0-9_-]+)\.([A-Za-z0-9]+)$/;
+// Invitación abierta antes de iniciar sesión: se retoma al entrar.
+const PENDING_INVITE_KEY = "poker_pending_invite_v1";
 const LEGACY_LAST_MATCH_KEY = "poker_last_match_v1";
 const MAX_TABLES = 4;
 // El servidor sostiene cada GET ?since= hasta 25 s; el cliente corta a los 35 s por si la red se cuelga.
@@ -44,6 +49,8 @@ let tokenRefreshTimer = null;
 let invitationPollTimer = null;
 let dismissedInvitationIds = new Set();
 let invitationPopupVisible = false;
+/** Invitación por enlace ya revisada (vista previa + token), esperando que la aceptes o ignores. */
+let linkInvite = null;
 let toastTimer = null;
 /** Mesa cuya partida se quiere abandonar mientras la hoja de confirmación está abierta. */
 let resignTarget = null;
@@ -160,7 +167,7 @@ function expireSession() {
   stopInvitationPolling();
   saveSession(null);
   el("session-info").classList.add("hidden");
-  showScreen("auth");
+  showAuth();
   showError("auth-error", "Tu sesión venció. Vuelve a entrar.");
 }
 
@@ -403,9 +410,17 @@ el("btn-logout").addEventListener("click", () => {
   closeAllTables();
   stopInvitationPolling();
   saveSession(null);
+  sessionStorage.removeItem(PENDING_INVITE_KEY);
+  linkInvite = null;
   el("session-info").classList.add("hidden");
-  showScreen("auth");
+  showAuth();
 });
+
+/** Pantalla de login; si se llegó por un enlace de invitación, lo dice. */
+function showAuth() {
+  el("auth-invite-note").classList.toggle("hidden", !sessionStorage.getItem(PENDING_INVITE_KEY));
+  showScreen("auth");
+}
 
 function afterLogin() {
   el("player-name").textContent = session.player.displayName;
@@ -421,6 +436,7 @@ function afterLogin() {
   } else {
     goToLobby();
   }
+  void handlePendingInvite();
 }
 
 /** Vuelve al lobby y retoma el chequeo de invitaciones pendientes. Las mesas siguen abiertas, en pausa. */
@@ -900,6 +916,10 @@ class Table {
     hideError(this.q("action-error"));
 
     if (view.status === "WAITING_FOR_OPPONENT") {
+      if (view.linkInvitation) {
+        panel.appendChild(this.makeInviteLinkCard(inviteLink(view.id, view.linkInvitation.joinToken)));
+        return;
+      }
       const p = document.createElement("p");
       p.className = "waiting";
       p.textContent = "Invitación enviada. La mesa empieza en cuanto tu rival la acepte.";
@@ -937,6 +957,44 @@ class Table {
     }
     if (byType.ALL_IN) panel.appendChild(makeButton("All-in", "btn-gray", () => this.submitAction({ type: "ALL_IN" })));
     if (byType.RAISE) panel.appendChild(this.makeRaiseControl(byType.RAISE.min, byType.RAISE.max));
+  }
+
+  /** Sala de espera de una invitación por enlace: el enlace a la vista, para copiarlo o compartirlo. */
+  makeInviteLinkCard(link) {
+    const card = document.createElement("div");
+    card.className = "invite-card";
+
+    const title = document.createElement("p");
+    title.className = "headline";
+    title.textContent = "Invita con este enlace";
+
+    // Un campo de solo lectura y no texto suelto: se puede seleccionar a mano si el portapapeles no está disponible.
+    const field = document.createElement("input");
+    field.type = "text";
+    field.readOnly = true;
+    field.value = link;
+    field.className = "id-field invite-link";
+    field.setAttribute("aria-label", "Enlace de invitación");
+    field.addEventListener("focus", () => field.select());
+
+    const actions = document.createElement("div");
+    actions.className = "invite-card-actions";
+    const copy = makeButton("Copiar enlace", "btn-primary", (evt) => copyText(link, evt.currentTarget, field));
+    actions.appendChild(copy);
+    if (navigator.share) {
+      actions.appendChild(
+        makeButton("Compartir", "btn-tinted", () =>
+          navigator.share({ title: "Five-Card Draw", text: "Te invito a una partida de póker 1 vs. 1", url: link }).catch(() => {}),
+        ),
+      );
+    }
+
+    const note = document.createElement("p");
+    note.className = "footnote";
+    note.textContent = "Se une quien lo abra. La mesa empieza en cuanto alguien lo acepte.";
+
+    card.append(title, field, actions, note);
+    return card;
   }
 
   /** Slider + valor en vivo + botón: un solo gesto para elegir y confirmar la subida. */
@@ -1136,7 +1194,10 @@ async function pollInvitations() {
   if (document.hidden) return; // pestaña oculta: nadie va a ver la invitación
   try {
     const invitations = await api("GET", "/v1/invitations");
-    const pending = invitations.filter((inv) => !dismissedInvitationIds.has(inv.matchId));
+    // La invitación por enlace no está en esta lista (no tiene invitado): se suma a la que llegó por ID.
+    const pending = [linkInvite, ...invitations.filter((inv) => inv.matchId !== linkInvite?.matchId)].filter(
+      (inv) => inv && !dismissedInvitationIds.has(inv.matchId),
+    );
     if (pending.length > 0) {
       renderInvitationPopup(pending);
     } else if (invitationPopupVisible) {
@@ -1175,7 +1236,9 @@ function renderInvitationPopup(invitations) {
     actions.appendChild(
       makeButton("Ignorar", "btn-gray", () => {
         dismissedInvitationIds.add(inv.matchId);
-        pollInvitations();
+        if (linkInvite?.matchId === inv.matchId) linkInvite = null;
+        if (invitationPollTimer) pollInvitations();
+        else hideInvitationPopup();
       }),
     );
     actions.appendChild(makeButton("Jugar", "btn-primary", () => acceptInvitation(inv)));
@@ -1196,9 +1259,64 @@ function hideInvitationPopup() {
   renderedInvitationKey = null;
 }
 
-el("btn-dismiss-invitations").addEventListener("click", hideInvitationPopup);
+el("btn-dismiss-invitations").addEventListener("click", () => {
+  linkInvite = null; // "Ahora no": el enlace se puede volver a abrir cuando quieras
+  hideInvitationPopup();
+});
+
+// ---------- Invitación por enlace ----------
+function inviteLink(matchId, joinToken) {
+  return `${location.origin}/#unirse=${matchId}.${joinToken}`;
+}
+
+/**
+ * Si la URL trae un enlace de invitación, lo guarda para atenderlo (ahora o después de entrar) y lo
+ * quita de la barra de direcciones: el token no queda a la vista ni en el historial.
+ */
+function captureInviteFromUrl() {
+  const found = location.hash.match(INVITE_HASH_RE);
+  if (!found) return;
+  history.replaceState(null, "", location.pathname + location.search);
+  sessionStorage.setItem(PENDING_INVITE_KEY, JSON.stringify({ matchId: found[1], joinToken: found[2] }));
+}
+
+/** Muestra la invitación del enlace (quién invita y con qué reglas) para aceptarla o no: unirse reserva fichas. */
+async function handlePendingInvite() {
+  let invite = null;
+  try {
+    invite = JSON.parse(sessionStorage.getItem(PENDING_INVITE_KEY) ?? "null");
+  } catch {
+    // guardado corrupto: se descarta
+  }
+  sessionStorage.removeItem(PENDING_INVITE_KEY);
+  if (!invite || !session?.token) return;
+  try {
+    const preview = await api("POST", "/v1/invitations/preview", { body: invite });
+    if (preview.youAreIn) {
+      openMatch(preview.matchId); // tu propio enlace, o una partida a la que ya te uniste
+      return;
+    }
+    if (!preview.canJoin) {
+      showToast("Esa invitación ya no está disponible: la partida empezó o se canceló.", 4500);
+      return;
+    }
+    linkInvite = { ...preview, joinToken: invite.joinToken };
+    dismissedInvitationIds.delete(preview.matchId);
+    renderInvitationPopup([linkInvite]);
+  } catch (err) {
+    showToast(err.status === 404 ? "El enlace de invitación no es válido o la partida ya no existe." : errorMessage(err), 4500);
+  }
+}
+
+// Pegar un enlace en esta misma pestaña solo cambia el # (no recarga la página).
+window.addEventListener("hashchange", () => {
+  captureInviteFromUrl();
+  if (session?.token) void handlePendingInvite();
+  else if (!screens.auth.classList.contains("hidden")) showAuth();
+});
 
 async function acceptInvitation(inv) {
+  if (linkInvite?.matchId === inv.matchId) linkInvite = null;
   if (!tables.has(inv.matchId) && tables.size >= MAX_TABLES) {
     hideInvitationPopup();
     showToast(`Ya tienes ${MAX_TABLES} mesas abiertas: cierra una para aceptar otra partida.`, 4500);
@@ -1210,6 +1328,7 @@ async function acceptInvitation(inv) {
       idempotent: true,
     });
     hideInvitationPopup();
+    refreshWallet(); // la entrada ya quedó reservada
     openMatch(inv.matchId);
   } catch (err) {
     hideInvitationPopup();
@@ -1247,12 +1366,12 @@ function renderMyMatches(matches) {
     text.className = "row-text";
     const who = document.createElement("span");
     who.className = "headline";
-    who.textContent = match.opponentName ? `vs. ${match.opponentName}` : "Partida";
+    who.textContent = match.opponentName ? `vs. ${match.opponentName}` : match.inviteByLink ? "Invitación por enlace" : "Partida";
     const detail = document.createElement("span");
     detail.className = "footnote";
     const open = tables.has(match.matchId);
-    detail.textContent =
-      (match.status === "WAITING_FOR_OPPONENT" ? "Esperando que se una" : `Mano ${match.handNumber}`) + (open ? " · en una mesa" : "");
+    const waitingText = match.inviteByLink ? "Esperando que alguien abra el enlace" : "Esperando que se una";
+    detail.textContent = (match.status === "WAITING_FOR_OPPONENT" ? waitingText : `Mano ${match.handNumber}`) + (open ? " · en una mesa" : "");
     text.append(who, detail);
     row.appendChild(text);
 
@@ -1272,14 +1391,23 @@ function renderMyMatches(matches) {
 }
 
 // ---------- Lobby ----------
-el("btn-copy-id").addEventListener("click", (evt) => copyText(el("my-player-id").value, evt.currentTarget));
+el("btn-copy-id").addEventListener("click", (evt) => copyText(el("my-player-id").value, evt.currentTarget, el("my-player-id")));
 
-/** Copia y confirma en el propio botón ("Copiado") durante un instante: sin diálogos. */
-function copyText(value, button) {
-  navigator.clipboard?.writeText(value).catch(() => {});
-  if (!button) return;
+/**
+ * Copia y confirma en el propio botón ("Copiado") durante un instante: sin diálogos. Si el navegador no
+ * deja usar el portapapeles (p. ej. sin HTTPS), selecciona `field` para que se copie a mano.
+ */
+async function copyText(value, button, field) {
+  let copied = false;
+  try {
+    await navigator.clipboard.writeText(value);
+    copied = true;
+  } catch {
+    field?.focus();
+    field?.select();
+  }
   const original = button.textContent;
-  button.textContent = "Copiado";
+  button.textContent = copied ? "Copiado" : "Cópialo del campo";
   button.disabled = true;
   setTimeout(() => {
     button.textContent = original;
@@ -1299,11 +1427,17 @@ function updateRulesSummary() {
 ruleInputs.forEach((id) => el(id).addEventListener("input", updateRulesSummary));
 el("input-incremental-blinds").addEventListener("change", updateRulesSummary);
 
-el("form-create-match").addEventListener("submit", async (evt) => {
-  evt.preventDefault();
+/** Crea la partida con las reglas del formulario: invitando por ID o, con `byLink`, para compartir un enlace. */
+async function createMatchFromForm(byLink) {
   hideError("create-error");
   if (tables.size >= MAX_TABLES) {
     showError("create-error", `Ya tienes ${MAX_TABLES} mesas abiertas: cierra una para empezar otra partida.`);
+    return;
+  }
+  const inviteeId = el("input-invitee-id").value.trim();
+  if (!byLink && !inviteeId) {
+    showError("create-error", "Pega el ID de tu rival, o crea la partida con un enlace.");
+    el("input-invitee-id").focus();
     return;
   }
   const body = {
@@ -1312,22 +1446,30 @@ el("form-create-match").addEventListener("submit", async (evt) => {
     bigBlind: Number(el("input-big-blind").value),
     turnTimeoutSeconds: Number(el("input-turn-timeout").value),
     incrementalBlinds: el("input-incremental-blinds").checked,
-    inviteeId: el("input-invitee-id").value.trim(),
+    ...(byLink ? {} : { inviteeId }),
   };
   try {
     const match = await api("POST", "/v1/matches", { body, idempotent: true });
-    el("input-invitee-id").value = "";
+    if (!byLink) el("input-invitee-id").value = "";
+    refreshWallet(); // la entrada ya quedó reservada
     openMatch(match.id);
   } catch (err) {
     showError("create-error", errorMessage(err));
   }
+}
+
+el("form-create-match").addEventListener("submit", (evt) => {
+  evt.preventDefault();
+  void createMatchFromForm(false);
 });
+el("btn-create-link").addEventListener("click", () => void createMatchFromForm(true));
 
 // ---------- init ----------
 updateRulesSummary();
+captureInviteFromUrl();
 if (session?.token) {
   scheduleTokenRefresh();
   afterLogin();
 } else {
-  showScreen("auth");
+  showAuth();
 }

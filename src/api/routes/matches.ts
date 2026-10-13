@@ -3,7 +3,7 @@ import { z } from "zod";
 import { ensureMatchListener, subscribeToMatch } from "../../infrastructure/matchNotifier.js";
 import { requireAuthenticatedPlayer } from "../auth.js";
 import { requireIdempotencyKey } from "../idempotencyHeader.js";
-import { createMatchSchema, joinMatchSchema } from "../schemas.js";
+import { createMatchSchema, invitationPreviewSchema, joinMatchSchema } from "../schemas.js";
 import {
   createMatch,
   joinMatch,
@@ -11,6 +11,7 @@ import {
   requestRematch,
   listPendingInvitations,
   listActiveMatches,
+  previewInvitation,
 } from "../../application/matchService.js";
 import { getMatchViewForPlayer } from "../../application/handQueryService.js";
 import type { PlayerLimits } from "../rateLimits.js";
@@ -47,6 +48,16 @@ export async function matchRoutes(app: FastifyInstance, { limits }: { limits: Pl
     const playerId = await requireAuthenticatedPlayer(request);
     const invitations = await listPendingInvitations(playerId);
     return reply.code(200).send(invitations);
+  });
+
+  /**
+   * Lo que muestra un enlace de invitación antes de aceptarla. POST y no GET: el token del enlace va en
+   * el cuerpo, así no queda en logs de acceso ni de proxies como quedaría en la URL.
+   */
+  app.post("/v1/invitations/preview", { preHandler: limits.invitationPreview }, async (request, reply) => {
+    const playerId = await requireAuthenticatedPlayer(request);
+    const body = invitationPreviewSchema.parse(request.body);
+    return reply.code(200).send(await previewInvitation(playerId, body.matchId, body.joinToken));
   });
 
   /** Tus partidas sin terminar (en curso o esperando rival): el lobby las lista para volver a ellas. */

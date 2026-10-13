@@ -44,6 +44,7 @@
           </label>
           <button type="submit" class="btn btn-primary btn-block">Continuar</button>
         </form>
+        <p id="auth-invite-note" class="invite-note hidden" role="status">Te invitaron a una partida. Entra (o crea tu cuenta) para unirte.</p>
         <p class="footnote">Si el nombre es nuevo, se crea tu cuenta. Mínimo 8 caracteres.</p>
         <p id="auth-error" class="error hidden" role="alert"></p>
         <p class="footnote admin-link"><a href="/admin.html">Panel de administración</a></p>
@@ -64,7 +65,7 @@
         <h2 class="title">Nueva partida</h2>
         <label class="field">
           <span class="field-label">ID de tu rival</span>
-          <input id="input-invitee-id" type="text" required placeholder="Pega aquí su ID" autocomplete="off" spellcheck="false" />
+          <input id="input-invitee-id" type="text" placeholder="Pega aquí su ID" autocomplete="off" spellcheck="false" />
         </label>
         <details class="disclosure">
           <summary>
@@ -98,6 +99,9 @@
           </label>
         </details>
         <button type="submit" class="btn btn-primary btn-block">Invitar</button>
+        <div class="or-divider" aria-hidden="true"><span>o</span></div>
+        <button id="btn-create-link" type="button" class="btn btn-tinted btn-block">Crear partida con enlace</button>
+        <p class="footnote create-link-hint">Sin pedir su ID: te damos un enlace para copiar y pegar donde quieras, y se une quien lo abra.</p>
         <p id="create-error" class="error hidden" role="alert"></p>
       </form>
 

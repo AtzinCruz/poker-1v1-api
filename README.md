@@ -68,19 +68,29 @@ web. Para jugar una partida 1 vs. 1 necesitás dos sesiones de navegador indepen
 pestañas normales alcanza, porque la sesión se guarda en `sessionStorage`, que es por pestaña; no
 sirve abrir dos pestañas en modo incógnito compartido, pero sí dos ventanas o dos perfiles):
 
-1. **Pestaña 1**: escribí un nombre y entrá. En el lobby vas a ver tu "ID de jugador" — copialo.
-2. **Pestaña 2**: entrá con otro nombre. Copiá este segundo ID también.
-3. En la **pestaña 1**, pegá el ID de la pestaña 2 en "Crear partida" y creá la partida. Vas a
-   quedar en una mesa esperando, con el ID de partida y el token de invitación a la vista.
-4. En la **pestaña 2**, pegá esos dos datos en "Unirme a una partida" y confirmá — la primera
-   mano se reparte automáticamente apenas se unen los dos.
-5. Jugá turno a turno: cada pestaña muestra sus propias cartas, el pozo, de quién es el turno (con
+1. **Pestaña 1**: escribí un nombre y entrá.
+2. Invitá a tu rival de una de estas dos formas:
+   - **Con un enlace** (no hace falta saber su ID): "Crear partida con enlace". La mesa queda
+     esperando y muestra el enlace con "Copiar enlace" (y "Compartir" en el móvil). Pegalo donde
+     quieras; quien lo abra entra (o crea su cuenta), ve quién invita y con qué reglas, y pulsa "Jugar".
+   - **Por ID**: en la **pestaña 2**, entrá con otro nombre y copiá tu "ID" del lobby; en la pestaña 1
+     pegalo en "Nueva partida" e "Invitar". En la pestaña 2 aparece la invitación: "Jugar".
+3. La primera mano se reparte apenas se une el segundo jugador.
+4. Jugá turno a turno: cada pestaña muestra sus propias cartas, el pozo, de quién es el turno (con
    cuenta regresiva) y los botones de acción que correspondan (Check/Call/Raise/All-in/Fold, o la
    selección de cartas a descartar en la fase de draw).
 
 Si recargás la página a mitad de partida, el cliente recuerda las mesas abiertas (en
 `sessionStorage`) y vuelve a conectarse solo; desde el lobby, "Tus partidas" lista las partidas sin
 terminar para abrirlas en una mesa.
+
+### Invitación por enlace
+
+El enlace tiene la forma `https://…/#unirse=<matchId>.<joinToken>`. El token (128 bits aleatorios) es lo
+que da acceso: va en el `#`, que el navegador no manda al servidor, y el cliente lo quita de la barra
+de direcciones al abrirlo. Antes de unirse (que reserva fichas) se pide `POST /v1/invitations/preview`
+con el token en el cuerpo. Sin el token correcto la partida no se ve (404) ni se puede unir nadie
+(403). Una invitación por enlace no aparece en ninguna lista: no es una partida pública (§6.1).
 
 ### Varias mesas
 
@@ -226,6 +236,8 @@ disponibles, y `POST /v1/matches/{id}/actions` con el `actionVersion` correspond
   manos, acciones y eventos, y registros de admin de más de `ADMIN_ACTION_RETENTION_DAYS` (730); 0 =
   no purgar.
 - **Límites**: `bigBlind ≤ startingStack` al crear la partida (si no, no se podría repartir ninguna mano).
+- **Invitaciones**: `inviteeId` es opcional en `POST /v1/matches`. Con él, solo ese jugador puede unirse;
+  sin él, es una invitación por enlace y se une quien tenga el `joinToken` (excepto quien la creó).
 - **Cuentas nuevas**: como cada una trae 1000 fichas, se admiten 10 altas por IP y por hora.
 - **Cuentas y contraseñas**: `POST /v1/auth/session` crea la cuenta con la contraseña la primera vez
   que se usa un nombre y la verifica después (mismo mensaje de error para "no existe" y "contraseña

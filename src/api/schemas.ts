@@ -35,7 +35,8 @@ export const createMatchSchema = z.object({
   bigBlind: z.number().int().positive().default(DEFAULT_BIG_BLIND),
   turnTimeoutSeconds: z.number().int().min(15).max(120).optional(),
   incrementalBlinds: z.boolean().default(false),
-  inviteeId: z.string().min(1),
+  // Sin inviteeId: invitación por enlace (el enlace lleva el joinToken; no se lista en ningún lado).
+  inviteeId: z.string().min(1).optional(),
 }).refine((v) => v.smallBlind < v.bigBlind, {
   message: "smallBlind debe ser menor que bigBlind",
   path: ["smallBlind"],
@@ -45,7 +46,12 @@ export const createMatchSchema = z.object({
 });
 
 export const joinMatchSchema = z.object({
-  joinToken: z.string().min(1),
+  joinToken: z.string().min(1).max(200),
+});
+
+export const invitationPreviewSchema = z.object({
+  matchId: z.string().min(1).max(100),
+  joinToken: z.string().min(1).max(200),
 });
 
 export const submitActionSchema = z

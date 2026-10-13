@@ -72,8 +72,9 @@ model Match {
   player1   Player @relation("MatchPlayer1", fields: [player1Id], references: [id])
   player2Id String?
   player2   Player? @relation("MatchPlayer2", fields: [player2Id], references: [id])
-  // Jugador invitado al crear la partida (sección 6.1: "no se permite partida pública en v1").
-  inviteeId String
+  // Jugador invitado al crear la partida (sección 6.1: "no se permite partida pública en v1"). null =
+  // invitación por enlace: se une quien tenga el enlace con el joinToken (secreto, no se lista en ningún lado).
+  inviteeId String?
 
   dealerPlayerId String?
   handNumber     Int    @default(0)
