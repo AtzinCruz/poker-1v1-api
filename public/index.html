@@ -3,16 +3,15 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-  <meta name="color-scheme" content="light dark" />
-  <meta name="theme-color" content="#f5f5f7" media="(prefers-color-scheme: light)" />
-  <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)" />
+  <meta name="color-scheme" content="dark" />
+  <meta name="theme-color" content="#08100c" />
   <title>Five-Card Draw</title>
   <link rel="stylesheet" href="/styles.css" />
 </head>
 <body>
   <header class="topbar">
     <div class="topbar-inner">
-      <span class="brand">Five-Card Draw</span>
+      <span class="brand"><span class="brand-mark" aria-hidden="true">♠</span>Five-Card Draw</span>
       <div id="session-info" class="session-info hidden">
         <span class="balance-pill" title="Saldo disponible">
           <span id="wallet-available">–</span>
@@ -31,8 +30,17 @@
     <!-- Login -->
     <section id="screen-auth" class="screen screen-center">
       <div class="auth">
+        <!-- Escalera real en abanico: decorativa -->
+        <div class="hero-fan" aria-hidden="true">
+          <div class="card-tile"><span class="card-corner corner-tl"><span class="card-rank">10</span><span class="card-suit">♠</span></span><span class="card-center">♠</span><span class="card-corner corner-br"><span class="card-rank">10</span><span class="card-suit">♠</span></span></div>
+          <div class="card-tile court"><span class="card-corner corner-tl"><span class="card-rank">J</span><span class="card-suit">♠</span></span><span class="card-center">J</span><span class="card-corner corner-br"><span class="card-rank">J</span><span class="card-suit">♠</span></span></div>
+          <div class="card-tile court"><span class="card-corner corner-tl"><span class="card-rank">Q</span><span class="card-suit">♠</span></span><span class="card-center">Q</span><span class="card-corner corner-br"><span class="card-rank">Q</span><span class="card-suit">♠</span></span></div>
+          <div class="card-tile court"><span class="card-corner corner-tl"><span class="card-rank">K</span><span class="card-suit">♠</span></span><span class="card-center">K</span><span class="card-corner corner-br"><span class="card-rank">K</span><span class="card-suit">♠</span></span></div>
+          <div class="card-tile"><span class="card-corner corner-tl"><span class="card-rank">A</span><span class="card-suit">♠</span></span><span class="card-center">♠</span><span class="card-corner corner-br"><span class="card-rank">A</span><span class="card-suit">♠</span></span></div>
+        </div>
+        <p class="eyebrow">Póker · 1 contra 1</p>
         <h1 class="large-title">Five-Card Draw</h1>
-        <p class="subtitle">Póker uno contra uno.</p>
+        <p class="subtitle">Cinco cartas, un descarte y nadie más en la mesa.</p>
         <form id="form-login" class="group">
           <label class="field">
             <span class="field-label">Nombre</span>
@@ -192,23 +200,31 @@
       <div class="table">
         <section class="seat opponent-panel" aria-label="Rival">
           <div class="seat-header">
-            <span class="seat-name opponent-name">Rival</span>
-            <span class="seat-stack"><span class="opponent-stack">–</span> fichas</span>
+            <span class="avatar opponent-avatar" aria-hidden="true">?</span>
+            <span class="seat-meta">
+              <span class="seat-name opponent-name">Rival</span>
+              <span class="seat-stack"><span class="opponent-stack">–</span> fichas</span>
+            </span>
           </div>
           <span class="draw-note opponent-draw hidden"></span>
           <div class="cards opponent-cards"></div>
-          <span class="bet-chip opponent-bet"><span class="bet-chip-label">Apuesta</span> <span class="opponent-contribution">0</span></span>
+          <span class="bet-chip opponent-bet"><span class="chip-icon" aria-hidden="true"></span><span class="bet-chip-label">Apuesta</span> <span class="opponent-contribution">0</span></span>
         </section>
 
         <div class="pot-area">
-          <div class="timer turn-timer idle" aria-hidden="true">
-            <span class="turn-seconds"></span>
-          </div>
           <div class="pot">
-            <span class="pot-label">Pozo</span>
-            <span class="pot-amount">0</span>
+            <span class="pot-chips" aria-hidden="true"><span></span><span></span><span></span></span>
+            <span class="pot-text">
+              <span class="pot-label">Pozo</span>
+              <span class="pot-amount">0</span>
+            </span>
           </div>
-          <p class="turn-indicator" aria-live="polite"></p>
+          <div class="turn-status">
+            <div class="timer turn-timer idle" aria-hidden="true">
+              <span class="turn-seconds"></span>
+            </div>
+            <p class="turn-indicator" aria-live="polite"></p>
+          </div>
         </div>
 
         <section class="hand-result hidden" role="status">
@@ -226,11 +242,14 @@
         </section>
 
         <section class="seat seat-you you-panel" aria-label="Tú">
-          <span class="bet-chip you-bet"><span class="bet-chip-label">Apuesta</span> <span class="you-contribution">0</span></span>
+          <span class="bet-chip you-bet"><span class="chip-icon" aria-hidden="true"></span><span class="bet-chip-label">Apuesta</span> <span class="you-contribution">0</span></span>
           <div class="cards you-cards"></div>
           <div class="seat-header">
-            <span class="seat-name">Tú</span>
-            <span class="seat-stack"><span class="you-stack">–</span> fichas</span>
+            <span class="avatar you-avatar" aria-hidden="true">?</span>
+            <span class="seat-meta">
+              <span class="seat-name">Tú</span>
+              <span class="seat-stack"><span class="you-stack">–</span> fichas</span>
+            </span>
           </div>
         </section>
       </div>
