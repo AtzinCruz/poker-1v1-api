@@ -50,8 +50,7 @@ async function api(method, path, { body, idempotencyKey } = {}) {
   if (idempotencyKey) headers["Idempotency-Key"] = idempotencyKey;
 
   const res = await fetch(path, { method, headers, body: body !== undefined ? JSON.stringify(body) : undefined });
-  const text = await res.text();
-  const parsed = text ? JSON.parse(text) : null;
+  const parsed = await readJson(res);
   if (!res.ok) {
     if (res.status === 401 && adminSession?.token && path !== "/v1/auth/admin-session") {
       saveAdminSession(null);
@@ -59,9 +58,23 @@ async function api(method, path, { body, idempotencyKey } = {}) {
       showScreen("login");
       showError("admin-login-error", "La sesión de administrador venció, entrá de nuevo.");
     }
-    throw new ApiError(res.status, parsed);
+    throw new ApiError(res.status, parsed ?? (res.status >= 500 ? { message: SERVER_UNAVAILABLE_MESSAGE } : null));
   }
+  if (parsed === null) throw new ApiError(res.status, { message: SERVER_UNAVAILABLE_MESSAGE });
   return parsed;
+}
+
+const SERVER_UNAVAILABLE_MESSAGE = "El servidor no responde ahora mismo. Reintentá en unos segundos.";
+
+/** JSON del cuerpo, o null si no hay o no es JSON (p. ej. la página HTML de error de un proxy, R2-03). */
+async function readJson(res) {
+  const text = await res.text();
+  if (!text || !(res.headers.get("content-type") ?? "").includes("json")) return null;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
 }
 
 function showError(id, message) {
@@ -219,7 +232,9 @@ async function addBalance(playerId, input) {
     input.value = "";
     await loadPlayers();
   } catch (err) {
-    if (err instanceof ApiError) pendingCreditKeys.delete(intent); // respondió: la próxima es otra intención
+    // Solo una respuesta definitiva (4xx) cierra la intención. Un 5xx o un corte de red pudieron llegar a
+    // aplicar el abono: el reintento debe reusar la clave para no acreditar dos veces.
+    if (err instanceof ApiError && err.status < 500) pendingCreditKeys.delete(intent);
     showError("admin-players-error", err.message);
   }
 }

@@ -17,6 +17,8 @@ const MAX_TABLES = 4;
 // El servidor sostiene cada GET ?since= hasta 25 s; el cliente corta a los 35 s por si la red se cuelga.
 const LONG_POLL_CLIENT_TIMEOUT_MS = 35_000;
 const POLL_RETRY_MS = 2000;
+// Un long-poll que vuelve antes de esto y sin novedades no se repite enseguida (R2-01).
+const MIN_LONG_POLL_MS = 1000;
 const COUNTDOWN_TICK_MS = 250;
 const INVITATION_POLL_INTERVAL_MS = 3000;
 const URGENT_SECONDS = 10;
@@ -123,11 +125,18 @@ class ApiError extends Error {
   }
 }
 
-async function api(method, path, { body, idempotent = false, timeoutMs, signal } = {}) {
+const SERVER_UNAVAILABLE_MESSAGE = "El servidor no responde ahora mismo. Reintenta en unos segundos.";
+
+/**
+ * `idempotencyKey`: la clave de una intención (crear esta partida, unirse a esta). Quien reintenta la
+ * misma intención tras un corte de red pasa la misma clave y el servidor no la ejecuta dos veces (R2-02).
+ * `idempotent: true` genera una clave nueva para comandos que no se reintentan.
+ */
+async function api(method, path, { body, idempotent = false, idempotencyKey, timeoutMs, signal } = {}) {
   const headers = {};
   if (body !== undefined) headers["Content-Type"] = "application/json";
   if (session?.token) headers.Authorization = `Bearer ${session.token}`;
-  if (idempotent) headers["Idempotency-Key"] = crypto.randomUUID();
+  if (idempotencyKey || idempotent) headers["Idempotency-Key"] = idempotencyKey ?? crypto.randomUUID();
 
   const res = await fetch(path, {
     method,
@@ -136,16 +145,31 @@ async function api(method, path, { body, idempotent = false, timeoutMs, signal }
     signal: combineSignals(signal, timeoutMs ? AbortSignal.timeout(timeoutMs) : undefined),
   });
 
-  const text = await res.text();
-  const parsed = text ? JSON.parse(text) : null;
+  const parsed = await readJson(res);
 
   if (!res.ok) {
     if (res.status === 401 && session?.token && path !== "/v1/auth/session" && path !== "/v1/auth/password") {
       expireSession();
     }
-    throw new ApiError(res.status, parsed);
+    throw new ApiError(res.status, parsed ?? (res.status >= 500 ? { message: SERVER_UNAVAILABLE_MESSAGE } : null));
   }
+  // Toda respuesta correcta de la API es JSON: otra cosa es una página intermedia (portal, proxy).
+  if (parsed === null) throw new ApiError(res.status, { message: SERVER_UNAVAILABLE_MESSAGE });
   return parsed;
+}
+
+/**
+ * El cuerpo como JSON, o null si no hay cuerpo o no es JSON: p. ej. la página HTML de error de un proxy
+ * o balanceador (502/504). Parsearla tal cual mostraba "Unexpected token '<'…" al usuario (R2-03).
+ */
+async function readJson(res) {
+  const text = await res.text();
+  if (!text || !(res.headers.get("content-type") ?? "").includes("json")) return null;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
 }
 
 function combineSignals(...signals) {
@@ -246,7 +270,9 @@ function formatCard(code, faceDown = false) {
 
 /** Inicial del nombre para el avatar del asiento. */
 function initial(name) {
-  return (name || "?").trim().charAt(0).toUpperCase() || "?";
+  // Por puntos de código, no por unidades UTF-16: un nombre que empieza con un emoji no deja medio carácter (R3-03).
+  const [first] = [...(name || "").trim()];
+  return first ? first.toUpperCase() : "?";
 }
 
 const fmt = (n) => Number(n).toLocaleString("es");
@@ -378,6 +404,7 @@ document.addEventListener("keydown", (evt) => {
   if (evt.key !== "Escape") return;
   if (!el("resign-popup").classList.contains("hidden")) closeSheet("resign-popup");
   else if (invitationPopupVisible) hideInvitationPopup();
+  else for (const table of tables.values()) table.hideHandResult(); // también sin ratón (R3-01)
 });
 
 for (const [overlayId, close] of [
@@ -530,6 +557,7 @@ function replaceTable(oldMatchId, newMatchId) {
     return;
   }
   const old = tables.get(oldMatchId);
+  if (!old) return; // la mesa original ya no está: nada que reemplazar
   const table = new Table(newMatchId);
   const entries = [...tables.entries()].map(([id, t]) => (id === oldMatchId ? [newMatchId, table] : [id, t]));
   old.root.replaceWith(table.root);
@@ -616,7 +644,7 @@ class Table {
     });
     this.q("btn-close-table").addEventListener("click", () => closeTable(this.matchId));
     // El resultado flota sobre el paño: un toque lo quita antes de tiempo para ver la mano nueva.
-    this.q("hand-result").addEventListener("click", () => this.q("hand-result").classList.add("hidden"));
+    this.q("hand-result").addEventListener("click", () => this.hideHandResult());
   }
 
   /** Elemento de esta mesa con la clase dada. */
@@ -664,8 +692,15 @@ class Table {
         since = undefined; // al volver, lectura inmediata: pudo pasar de todo
         continue;
       }
+      const versionBefore = this.view?.stateVersion;
+      const startedAt = Date.now();
       const retryInMs = await this.pollOnce(since, generation);
-      if (retryInMs > 0) await sleep(retryInMs); // red caída, 503 o 429: reintentar sin martillar
+      if (retryInMs > 0) {
+        await sleep(retryInMs); // red caída, 503 o 429: reintentar sin martillar
+      } else if (since !== undefined && this.view?.stateVersion === versionBefore && Date.now() - startedAt < MIN_LONG_POLL_MS) {
+        // El servidor contestó al instante y sin novedades: no volver a preguntar en bucle (R2-01).
+        await sleep(MIN_LONG_POLL_MS + Math.random() * MIN_LONG_POLL_MS);
+      }
       // Una partida cancelada ya no cambia: deja de escuchar.
       if (this.view?.status === "CANCELLED") return;
       since = this.view?.stateVersion;
@@ -712,6 +747,10 @@ class Table {
   render(view) {
     const previous = this.view;
     this.view = view;
+    // La selección de descarte solo vale durante TU draw de ESTA mano (R2-04): si no, tras turnos vencidos
+    // el draw siguiente aparecía con cartas que nunca elegiste ya marcadas.
+    const myDraw = view.phase === "DRAW" && this.isYourTurn();
+    if (!myDraw || previous?.handNumber !== view.handNumber) this.selectedDiscardIndexes.clear();
     const finished = view.status === "MATCH_FINISHED" || view.status === "CANCELLED";
     const waiting = view.status === "WAITING_FOR_OPPONENT";
     const opponentName = view.opponent?.displayName || "Rival";
@@ -759,6 +798,8 @@ class Table {
     this.renderCards("you-cards", view.you.cards);
 
     const isYourTurn = this.isYourTurn();
+    // Si el turno te llega con el resultado anterior aún a la vista, se encoge a su línea de texto (R3-01).
+    if (isYourTurn) this.q("hand-result-hands").classList.add("hidden");
     this.root.classList.toggle("your-turn", isYourTurn && !finished);
     this.q("you-panel").classList.toggle("active-turn", isYourTurn);
     this.q("opponent-panel").classList.toggle("active-turn", Boolean(view.turn && !isYourTurn));
@@ -814,7 +855,11 @@ class Table {
     } else if (lastHand.winReason === "SPLIT") {
       text = `Empate · pozo de ${fmt(lastHand.pot)} a medias · ${net}`;
     } else if (lastHand.winReason === "FORFEIT") {
-      text = youWon ? `Ganaste la mano · ${rival} abandonó · ${net}` : `Abandonaste · ${net}`;
+      // FORFEIT es abandono o desconexión; lo distingue el motivo del fin de la partida (R2-05).
+      const idle = view.finishReason === "DISCONNECT_TIMEOUT";
+      text = youWon
+        ? `Ganaste la mano · ${rival} ${idle ? "se desconectó" : "abandonó"} · ${net}`
+        : `${idle ? "Perdiste por inactividad" : "Abandonaste"} · ${net}`;
     } else {
       const youFolded = lastHand.folderId === me;
       const why = lastHand.timedOut ? (youFolded ? " (se te acabó el tiempo)" : " (se le acabó el tiempo)") : "";
@@ -825,7 +870,9 @@ class Table {
     this.q("hand-result-text").textContent = text;
     const hands = this.q("hand-result-hands");
     const revealed = lastHand.revealedCards;
-    hands.classList.toggle("hidden", !revealed);
+    // Si ya te toca actuar en la mano nueva, solo la línea de texto: las manos reveladas tapaban tus cartas (R3-01).
+    const showHands = Boolean(revealed) && !this.isYourTurn();
+    hands.classList.toggle("hidden", !showHands);
     for (const [cls, cards] of [["result-you-cards", revealed?.you], ["result-opponent-cards", revealed?.opponent]]) {
       const container = this.q(cls);
       container.innerHTML = "";
@@ -835,7 +882,12 @@ class Table {
     box.classList.toggle("won", youWon);
     announce(tables.size > 1 ? `${this.opponentLabel()}: ${text}` : text);
     clearTimeout(this.resultTimer);
-    this.resultTimer = setTimeout(() => box.classList.add("hidden"), revealed ? SHOWDOWN_RESULT_MS : HAND_RESULT_MS);
+    this.resultTimer = setTimeout(() => box.classList.add("hidden"), showHands ? SHOWDOWN_RESULT_MS : HAND_RESULT_MS);
+  }
+
+  hideHandResult() {
+    clearTimeout(this.resultTimer);
+    this.q("hand-result").classList.add("hidden");
   }
 
   /** Vuelve a pintar las cartas solo si cambiaron, así la animación de reparto no se repite en cada poll. */
@@ -1169,6 +1221,11 @@ class Table {
     try {
       const match = await api("POST", `/v1/matches/${this.matchId}/rematch`, { idempotent: true });
       refreshWallet();
+      if (tables.get(this.matchId) !== this) {
+        // La mesa se cerró mientras respondía (R2-06): la revancha existe y queda en «Tus partidas».
+        showToast("La revancha está lista en «Tus partidas».", 4500);
+        return;
+      }
       replaceTable(this.matchId, match.id);
     } catch (err) {
       buttons.forEach((b) => (b.disabled = false));
@@ -1265,7 +1322,7 @@ function renderInvitationPopup(invitations) {
         else hideInvitationPopup();
       }),
     );
-    actions.appendChild(makeButton("Jugar", "btn-primary", () => acceptInvitation(inv)));
+    actions.appendChild(makeButton("Jugar", "btn-primary", () => acceptInvitation(inv, item)));
     item.appendChild(actions);
     list.appendChild(item);
   }
@@ -1339,24 +1396,38 @@ window.addEventListener("hashchange", () => {
   else if (!screens.auth.classList.contains("hidden")) showAuth();
 });
 
-async function acceptInvitation(inv) {
+/** Clave de idempotencia de cada "unirme a esta partida": un reintento tras un corte de red la reusa. */
+const joinKeys = new Map();
+
+async function acceptInvitation(inv, item) {
+  // Mientras se une, los botones de la invitación quedan desactivados: un doble clic mandaba dos
+  // uniones y la segunda mostraba "ya no acepta un segundo jugador" con el jugador ya sentado (R2-02).
+  const buttons = item ? [...item.querySelectorAll("button")] : [];
+  if (buttons.some((b) => b.disabled)) return;
   if (linkInvite?.matchId === inv.matchId) linkInvite = null;
   if (!tables.has(inv.matchId) && tables.size >= MAX_TABLES) {
     hideInvitationPopup();
     showToast(`Ya tienes ${MAX_TABLES} mesas abiertas: cierra una para aceptar otra partida.`, 4500);
     return;
   }
+  if (!joinKeys.has(inv.matchId)) joinKeys.set(inv.matchId, crypto.randomUUID());
+  buttons.forEach((b) => (b.disabled = true));
   try {
     await api("POST", `/v1/matches/${inv.matchId}/join`, {
       body: { joinToken: inv.joinToken },
-      idempotent: true,
+      idempotencyKey: joinKeys.get(inv.matchId),
     });
+    joinKeys.delete(inv.matchId);
     hideInvitationPopup();
     refreshWallet(); // la entrada ya quedó reservada
     openMatch(inv.matchId);
   } catch (err) {
+    // 4xx: respuesta definitiva, el próximo intento es otra intención. Red caída o 5xx: se conserva la clave.
+    if (err instanceof ApiError && err.status < 500) joinKeys.delete(inv.matchId);
     hideInvitationPopup();
     showToast(errorMessage(err));
+  } finally {
+    buttons.forEach((b) => (b.disabled = false));
   }
 }
 
@@ -1451,9 +1522,22 @@ function updateRulesSummary() {
 ruleInputs.forEach((id) => el(id).addEventListener("input", updateRulesSummary));
 el("input-incremental-blinds").addEventListener("change", updateRulesSummary);
 
+/** Clave de idempotencia de la creación en curso; se reusa si se reintenta el mismo formulario. */
+let pendingCreate = null; // { fingerprint, key }
+let creatingMatch = false;
+
 /** Crea la partida con las reglas del formulario: invitando por ID o, con `byLink`, para compartir un enlace. */
 async function createMatchFromForm(byLink) {
+  if (creatingMatch) return; // el segundo clic de un doble clic (R2-02)
   hideError("create-error");
+  // Los dos botones validan igual (el formulario es `novalidate`): antes "Crear partida con enlace",
+  // que no es de tipo submit, mandaba valores inválidos al servidor (R2-07).
+  const form = el("form-create-match");
+  if (!form.checkValidity()) {
+    form.querySelector("details").open = true; // los campos de reglas viven dentro de «Reglas»
+    form.reportValidity();
+    return;
+  }
   if (tables.size >= MAX_TABLES) {
     showError("create-error", `Ya tienes ${MAX_TABLES} mesas abiertas: cierra una para empezar otra partida.`);
     return;
@@ -1472,13 +1556,26 @@ async function createMatchFromForm(byLink) {
     incrementalBlinds: el("input-incremental-blinds").checked,
     ...(byLink ? {} : { inviteeId }),
   };
+  // Una clave por intención (R2-02): un doble clic o el reintento tras un corte de red no crean dos
+  // partidas ni reservan la entrada dos veces. Cambiar el formulario es otra intención: otra clave.
+  const fingerprint = JSON.stringify(body);
+  if (pendingCreate?.fingerprint !== fingerprint) pendingCreate = { fingerprint, key: crypto.randomUUID() };
+  const buttons = [form.querySelector('button[type="submit"]'), el("btn-create-link")];
+  creatingMatch = true;
+  buttons.forEach((b) => (b.disabled = true));
   try {
-    const match = await api("POST", "/v1/matches", { body, idempotent: true });
+    const match = await api("POST", "/v1/matches", { body, idempotencyKey: pendingCreate.key });
+    pendingCreate = null;
     if (!byLink) el("input-invitee-id").value = "";
     refreshWallet(); // la entrada ya quedó reservada
     openMatch(match.id);
   } catch (err) {
+    // 4xx: respuesta definitiva, el próximo intento es otra intención. Red caída o 5xx: se conserva la clave.
+    if (err instanceof ApiError && err.status < 500) pendingCreate = null;
     showError("create-error", errorMessage(err));
+  } finally {
+    creatingMatch = false;
+    buttons.forEach((b) => (b.disabled = false));
   }
 }
 

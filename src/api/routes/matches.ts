@@ -14,18 +14,23 @@ import {
   previewInvitation,
 } from "../../application/matchService.js";
 import { getMatchViewForPlayer } from "../../application/handQueryService.js";
-import type { PlayerLimits } from "../rateLimits.js";
+import { rateLimitedError, type PlayerLimits } from "../rateLimits.js";
 
 /** Por debajo del timeout de inactividad habitual de proxies (30–60 s). */
 export const LONG_POLL_MAX_MS = 25_000;
 /**
  * Esperas abiertas a la vez (AUD-06): por jugador en una misma partida, y por jugador en total (el
- * cliente muestra hasta 4 mesas, una espera cada una). Pasado el tope la petición se responde al
- * instante, sin esperar; si el cliente insiste, lo frena el límite de lecturas por partida. Antes un
- * solo token abría miles de esperas y, al despertar todas juntas, degradaba la latencia de todos.
+ * cliente muestra hasta 4 mesas, una espera cada una). Antes un solo token abría miles de esperas y, al
+ * despertar todas juntas, degradaba la latencia de todos.
+ *
+ * Pasado el tope no se espera: si la partida ya cambió, la vista nueva se entrega al instante; si no,
+ * 429 con un `retryAfterMs` corto (R2-01). Responder 200 sin novedades hacía que el cliente volviera a
+ * preguntar en bucle hasta agotar el cupo de lecturas de la partida, y dejaba sin lecturas también a las
+ * esperas legítimas del mismo jugador.
  */
 export const MAX_WAITS_PER_MATCH = 3;
 export const MAX_WAITS_PER_PLAYER = 16;
+export const EXCESS_WAIT_RETRY_MS = 3_000;
 const matchViewQuerySchema = z.object({ since: z.coerce.number().int().nonnegative().optional() });
 
 /** Contador de esperas abiertas por clave (en memoria, por instancia). */
@@ -43,6 +48,8 @@ class WaitCounter {
 
 export async function matchRoutes(app: FastifyInstance, { limits }: { limits: PlayerLimits }): Promise<void> {
   const waits = new WaitCounter();
+  const overCap = (perMatch: string, playerId: string) =>
+    waits.count(perMatch) >= MAX_WAITS_PER_MATCH || waits.count(playerId) >= MAX_WAITS_PER_PLAYER;
 
   app.get("/v1/invitations", async (request, reply) => {
     const playerId = await requireAuthenticatedPlayer(request);
@@ -99,8 +106,10 @@ export async function matchRoutes(app: FastifyInstance, { limits }: { limits: Pl
     }
 
     const perMatch = `${playerId}|${matchId}`;
-    if (waits.count(perMatch) >= MAX_WAITS_PER_MATCH || waits.count(playerId) >= MAX_WAITS_PER_PLAYER) {
-      return reply.code(200).send(await getMatchViewForPlayer(matchId, playerId));
+    if (overCap(perMatch, playerId)) {
+      const fresh = await getMatchViewForPlayer(matchId, playerId);
+      if (fresh.status === "CANCELLED" || fresh.stateVersion > since) return reply.code(200).send(fresh);
+      throw rateLimitedError(EXCESS_WAIT_RETRY_MS);
     }
 
     await ensureMatchListener();
@@ -121,9 +130,9 @@ export async function matchRoutes(app: FastifyInstance, { limits }: { limits: Pl
       return reply.code(200).send(view);
     }
     // Se vuelve a mirar el tope: la lectura de arriba es asíncrona y otras esperas pudieron abrirse.
-    if (waits.count(perMatch) >= MAX_WAITS_PER_MATCH || waits.count(playerId) >= MAX_WAITS_PER_PLAYER) {
+    if (overCap(perMatch, playerId)) {
       wait.cancel();
-      return reply.code(200).send(view);
+      throw rateLimitedError(EXCESS_WAIT_RETRY_MS);
     }
 
     const untilTurnExpires = view.turn ? Date.parse(view.turn.expiresAt) - Date.now() + 50 : LONG_POLL_MAX_MS;

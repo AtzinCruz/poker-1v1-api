@@ -254,8 +254,14 @@ disponibles, y `POST /v1/matches/{id}/actions` con el `actionVersion` correspond
 - **Límites de tasa** (§8.1): además del global de 300/min por IP, hay cupos por cuenta (login,
   10/min), por jugador (crear partidas, sesión) y por jugador y partida (60 comandos y 240 lecturas por
   minuto). Un `429` trae `retryAfterMs` en el cuerpo y `Retry-After` en la cabecera. Cada jugador tiene
-  como mucho 3 long-polls abiertos por partida y 16 en total; los que pasan del tope responden al
-  instante. Todo vive en memoria de cada instancia: con varias réplicas, hace falta un store compartido.
+  como mucho 3 long-polls abiertos por partida y 16 en total; pasado el tope no se espera: si la partida
+  ya cambió se entrega la vista nueva y si no, `429` con `retryAfterMs` de 3 s. El cliente, además, no
+  repite al instante un long-poll que volvió sin novedades. Todo vive en memoria de cada instancia: con
+  varias réplicas, hace falta un store compartido.
+- **Comandos del cliente**: los botones que crean o aceptan una partida se desactivan mientras la
+  petición está en curso, y la `Idempotency-Key` es por intención (se reusa si se reintenta tras un corte
+  de red), así que un doble clic no crea dos partidas ni reserva la entrada dos veces. Una respuesta que
+  no es JSON (p. ej. la página de error de un proxy) se muestra como "El servidor no responde".
 - **Cabeceras HTTP** (`src/api/securityHeaders.ts`): CSP estricta (`'self'`, sin `unsafe-inline`; el
   cliente no puede tener `<script>` ni `style=""` en línea), `X-Frame-Options: DENY`, `nosniff`,
   `Referrer-Policy: no-referrer`, COOP/CORP `same-origin`, HSTS y `Cache-Control: no-store` en `/v1/*`.
@@ -268,7 +274,7 @@ disponibles, y `POST /v1/matches/{id}/actions` con el `actionVersion` correspond
   `503` si no llega — es el que debe usar el health check del despliegue. Si la BD cae a mitad de una
   petición (P1001, pool agotado P2024, etc.) la API responde `503 SERVICE_UNAVAILABLE` con
   `Retry-After: 2`, no un `500` genérico.
-- **Compresión**: el cliente estático se sirve con br/gzip (`app.js` 29 KB → ~7 KB). Las respuestas
+- **Compresión**: el cliente estático se sirve con br/gzip (HTML + CSS + JS: ~101 KB → ~29 KB). Las respuestas
   de `/v1/*` nunca se comprimen: pesan menos de 1 KB y algunas combinan un secreto (el JWT) con
   texto del usuario, lo que explotan ataques tipo BREACH.
 - **Ajustes de producción**: `connection_limit`/`pool_timeout` en `DATABASE_URL`,

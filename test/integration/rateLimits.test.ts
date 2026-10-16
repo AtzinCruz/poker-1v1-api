@@ -6,7 +6,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vites
 import { randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import { buildServer } from "../../src/api/server.js";
-import { MAX_WAITS_PER_MATCH } from "../../src/api/routes/matches.js";
+import { EXCESS_WAIT_RETRY_MS, MAX_WAITS_PER_MATCH } from "../../src/api/routes/matches.js";
 import { createTestApp } from "../helpers/testApp.js";
 import { resetDatabase } from "../helpers/db.js";
 import { act, bearer, makePlayer, startMatch, view } from "../helpers/scenario.js";
@@ -153,8 +153,8 @@ describe("429 RATE_LIMITED (AUD-09)", () => {
   });
 });
 
-describe("tope de long-polls abiertos (AUD-06)", () => {
-  it(`más de ${MAX_WAITS_PER_MATCH} esperas del mismo jugador en una partida: la siguiente responde al instante`, async () => {
+describe("tope de long-polls abiertos (AUD-06, R2-01)", () => {
+  it(`más de ${MAX_WAITS_PER_MATCH} esperas del mismo jugador en una partida: la siguiente recibe 429 con retryAfterMs, sin esperar`, async () => {
     const alice = await makePlayer("alice");
     const bob = await makePlayer("bob");
     const m = await startMatch(app, alice, bob);
@@ -165,13 +165,58 @@ describe("tope de long-polls abiertos (AUD-06)", () => {
     await new Promise((r) => setTimeout(r, 300)); // que queden esperando
     const started = Date.now();
     const extra = await poll();
-    expect(extra.statusCode).toBe(200);
+    expect(extra.statusCode).toBe(429);
+    expect(extra.json()).toMatchObject({ code: "RATE_LIMITED", retryAfterMs: EXCESS_WAIT_RETRY_MS });
+    expect(extra.headers["retry-after"]).toBe(String(EXCESS_WAIT_RETRY_MS / 1000));
     expect(Date.now() - started).toBeLessThan(1000);
 
     // Un cambio en la partida despierta a las que esperaban.
     expect((await act(app, m, alice, { type: "BET", amount: 20, actionVersion: since }, randomUUID())).statusCode).toBe(200);
     const woken = await Promise.all(waiting);
     expect(woken.map((r) => r.json().stateVersion > since)).toEqual(Array(MAX_WAITS_PER_MATCH).fill(true));
+  });
+
+  it("pasado el tope, si la partida ya cambió la vista nueva se entrega al instante (200)", async () => {
+    const alice = await makePlayer("alice");
+    const bob = await makePlayer("bob");
+    const m = await startMatch(app, alice, bob);
+    const current = (await view(app, m, bob)).stateVersion;
+    const waiting = Array.from({ length: MAX_WAITS_PER_MATCH }, () =>
+      app.inject({ method: "GET", url: `/v1/matches/${m}?since=${current}`, headers: bearer(bob) }),
+    );
+    await new Promise((r) => setTimeout(r, 300));
+
+    const behind = await app.inject({ method: "GET", url: `/v1/matches/${m}?since=${current - 1}`, headers: bearer(bob) });
+    expect(behind.statusCode).toBe(200);
+    expect(behind.json().stateVersion).toBe(current);
+
+    await act(app, m, alice, { type: "BET", amount: 20, actionVersion: current }, randomUUID());
+    await Promise.all(waiting);
+  });
+
+  it("una espera de más no deja sin lecturas a las demás pestañas del jugador (R2-01)", async () => {
+    const alice = await makePlayer("alice");
+    const bob = await makePlayer("bob");
+    const m = await startMatch(app, alice, bob);
+    const v0 = (await view(app, m, alice)).stateVersion as number;
+    const longPoll = () => app.inject({ method: "GET", url: `/v1/matches/${m}?since=${v0}`, headers: bearer(alice) });
+    const held = Array.from({ length: MAX_WAITS_PER_MATCH }, longPoll);
+    await new Promise((r) => setTimeout(r, 300));
+
+    // El bucle de Table.pollLoop (public/app.js) sin su pausa: con 200 vuelve a preguntar enseguida.
+    let requests = 0;
+    const started = Date.now();
+    while (Date.now() - started < 2000) {
+      requests += 1;
+      if ((await longPoll()).statusCode !== 200) break;
+    }
+    // Antes: ~237 peticiones en ~1 s hasta agotar el cupo, y 429 durante 59 s para TODAS las pestañas.
+    expect(requests).toBe(1);
+    const otherTab = await app.inject({ method: "GET", url: `/v1/matches/${m}`, headers: bearer(alice) });
+    expect(otherTab.statusCode).toBe(200);
+
+    await act(app, m, alice, { type: "BET", amount: 20, actionVersion: v0 }, randomUUID());
+    await Promise.all(held);
   });
 });
 

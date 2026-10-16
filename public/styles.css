@@ -49,7 +49,7 @@
   --line: rgba(230, 196, 120, 0.14);
   --label: #f4efe3;
   --secondary: #a9ab9f;
-  --tertiary: #6d7269;
+  --tertiary: #80857b; /* textos de ejemplo de los campos: ≥ 4,5:1 sobre el campo (R3-02); era #6d7269 (3,85:1) */
   --separator: rgba(255, 255, 255, 0.08);
 
   --gold: #e6bd5c;

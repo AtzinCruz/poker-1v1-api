@@ -10,6 +10,10 @@ npx vitest run -c test/audit/vitest.config.ts
 
 En el estado actual, **14 de los 30 tests de auditoría fallan a propósito**: cada fallo reproduce un hallazgo. El resto son pruebas de propiedades, fuzz y carreras que el código supera.
 
+> **Re-auditoría del rediseño (PR #9, 2026-10-15):** sin defectos de seguridad. Tres hallazgos corregidos (R3-01 Baja; R3-02 y R3-03 Info) y uno de maquetación que queda para el diseñador (R3-04 Info); ver la **sección 8**.
+>
+> **Re-auditoría 2026-10-15 (cliente web):** 1 hallazgo Medio, 3 Bajos y 4 informativos sobre el front end nuevo (4 mesas, invitación por enlace); ver la **sección 7**. Todos quedaron corregidos el mismo día, con sus reproducciones como regresión en `npm test` y `npm run test:e2e` (**sección 7.5**).
+>
 > **Actualización 2026-10-10:** todos los hallazgos están corregidos o resueltos; ver la sección 6. Las reproducciones pasaron a la suite normal (`npm test`) como regresión, y en `test/audit/` quedan el fuzz y las propiedades del motor (`npm run test:audit`).
 
 **Estado:** CONFIRMADO = reproducido con un test o una medición. SOSPECHA = razonado o leído en el código, sin reproducción.
@@ -479,3 +483,183 @@ Todas las pruebas de regresión están en `npm test` (199 tests). El fuzz (`npm 
 | AUD-23 | Semilla inyectable en tests (`setSeedSourceForTests`, solo con `NODE_ENV=test`): `fullHand.test.ts` afirma ganador y pago. Reproducciones movidas a la suite normal. E2E sin esperas fijas de sincronización (las que quedan son la propia medición). | — |
 
 Cambios de producto pedidos durante las correcciones, que también afectan a las reglas: al abandonar o desconectarse, el jugador conserva su stack (pierde solo lo apostado en la mano en curso); stack inicial por defecto de 300; ciegas incrementales opcionales (cada 3 manos, +5 % del stack inicial); y el cliente juega hasta 4 partidas a la vez en pantalla dividida.
+
+---
+
+## 7. Re-auditoría del cliente web (2026-10-15)
+
+**Alcance.** Los cambios del front end posteriores a la auditoría: `public/app.js` reescrito (hasta 4 mesas en pantalla dividida, invitación por enlace, resultado de la mano, renovación del token), `public/index.html`, `public/styles.css`, `public/admin.js`, y las rutas del servidor que usa el cliente nuevo (`src/api/routes/matches.ts`, `src/api/rateLimits.ts`, `previewInvitation`/`joinMatch` en `src/application/matchService.ts`, `lastHand`/`linkInvitation` en `src/application/handQueryService.ts`). Commits `c8de1e7` y `cd68fb9`, comparados con `f17a0c3`.
+
+**Estado de partida.** `npm run lint` y `npm run typecheck` en verde; `npm test`: 205 tests en 28 ficheros, cobertura de `src/` del 90,5 % de sentencias (el cliente solo lo cubre el e2e). E2E del proyecto: **40/40** (escritorio y móvil, 4,1 min); en la primera auditoría no se había podido ejecutar (§5). Suite de auditoría: propiedades del motor y fuzz de 150 manos sin violaciones.
+
+**Cómo se reprodujo.** Con `test/audit/longPollCap.audit.ts` (Vitest) y `test/audit/e2e/client.audit.spec.ts` (Playwright), que se citan abajo. Al corregir, esas reproducciones pasaron a la suite permanente y se borraron de `test/audit/`: ver **7.5**.
+
+### 7.1 Hallazgos
+
+| ID | Severidad | Área | Título | Estado | Ubicación |
+| --- | --- | --- | --- | --- | --- |
+| R2-02 | Media | Cliente / idempotencia | Doble clic en «Invitar» o «Crear partida con enlace» crea dos partidas y reserva la entrada dos veces; en «Jugar», dos uniones y un error falso | CONFIRMADO | `public/app.js:130`, `:1318-1337`, `:1431-1465` |
+| R2-01 | Baja | Cliente + API / DoS | Con el tope de long-polls superado (misma cuenta y partida en 4 navegadores o dispositivos), el cliente entra en un bucle sin pausa y deja al jugador **59 s sin ver su partida** en todos ellos | CONFIRMADO | `src/api/routes/matches.ts:102-104`, `:124-127`; `public/app.js:637-651`; `src/api/rateLimits.ts:55-56`, `:67` |
+| R2-03 | Baja | Cliente / errores | Un 502/504 en HTML de un proxy se muestra como «Unexpected token '<' … is not valid JSON» | CONFIRMADO | `public/app.js:139-140`, `public/admin.js:53-54` |
+| R2-04 | Baja | Cliente | La selección de descarte sobrevive a la mano: tras turnos vencidos, el DRAW siguiente aparece con cartas ya marcadas | CONFIRMADO | `public/app.js:582`, `:1042` |
+| R2-05 | Info | Cliente | Perder por inactividad (`DISCONNECT_TIMEOUT`) se anuncia en la mesa como «Abandonaste» | SOSPECHA (código) | `public/app.js:792-793` |
+| R2-06 | Info | Cliente | Cerrar la mesa mientras responde la revancha rompe `replaceTable` (la revancha se crea pero no se abre) | SOSPECHA (código) | `public/app.js:507-522`, `:1140-1153` |
+| R2-07 | Info | Cliente / UX | «Crear partida con enlace» no pasa por la validación HTML del formulario; un valor inválido llega como «Cuerpo de solicitud inválido» | SOSPECHA (código) | `public/index.html:101-103`, `public/app.js:1431-1465` |
+| R2-08 | Info | Calidad de tests | El e2e no cubre doble clic, errores no JSON ni topes de long-poll | CONFIRMADO (revisión) | `e2e/*.spec.ts` |
+
+### 7.2 Detalle
+
+#### R2-01 · Baja · Tope de long-polls superado: bucle sin pausa y 59 s sin lecturas
+
+**Descripción.** La corrección de AUD-06 limita las esperas abiertas a 3 por jugador y partida y 16 por jugador; las que pasan del tope se **responden al instante con 200 y la misma versión** (`matches.ts:102-104` y `:124-127`). El bucle del cliente (`Table.pollLoop`, `app.js:637-651`) vuelve a preguntar enseguida con el mismo `since`, sin ninguna pausa. En menos de 1,5 s agota el cupo de lecturas de **ese jugador en esa partida** (240/min, clave `jugador|partida`, `rateLimits.ts:55-56` y `:67`), y a partir de ahí **todas** sus pestañas reciben 429 sobre esa partida durante el resto del minuto. Al liberarse el cupo, la pestaña sobrante lo vuelve a vaciar.
+
+**Cuándo pasa.** Con la misma cuenta y la misma partida abiertas a la vez en 4 navegadores o dispositivos (o más de 16 esperas en total). Con 4 pestañas de un mismo perfil de Chromium **no** se reproduce: Playwright lo comprobó, probablemente porque Chromium no lanza a la vez GETs idénticos en curso (la misma URL `?since=V`). Con 4 contextos separados, que equivalen a 4 navegadores, sí: **235 long-polls en 10 s** y respuestas 429 (`test/audit/e2e/client.audit.spec.ts`, «la misma mesa en 4 navegadores»).
+
+**Reproducción** (`test/audit/longPollCap.audit.ts`). Tres long-polls de Alice quedan abiertos; la cuarta pestaña repite el bucle de `pollLoop`.
+- **Obtenido:** **237 peticiones en 0,7–1,4 s**, la última 429; la lectura normal de otra pestaña de Alice → **429, bloqueada 59 s**.
+- **Esperado:** como mucho unas pocas peticiones, y las demás pestañas siguen leyendo.
+
+**Impacto.** El jugador no ve las jugadas del rival ni su propio turno durante ~1 minuto, cada minuto. Con turnos de 15–60 s se le aplican check o fold automáticos y, tras ~3 min de acciones automáticas, pierde la partida por `DISCONNECT_TIMEOUT`. No afecta a otros jugadores. Severidad Baja: la precondición (4 navegadores o dispositivos con la misma cuenta y partida) es poco habitual, aunque el arreglo es barato.
+
+**Corrección recomendada.**
+- **Servidor:** responder la espera sobrante con `429` y un `retryAfterMs` corto (2–5 s), que el cliente ya respeta (`app.js:685`). Alternativa: cerrar la espera más vieja de ese jugador y partida, y que la nueva pestaña se quede con el long-poll.
+- **Cliente:** si un long-poll vuelve con la misma `stateVersion`, esperar 1–2 s con jitter antes de repetir. Así ningún comportamiento del servidor puede provocar un bucle.
+- **Límite de lecturas:** que las respuestas inmediatas a esperas sobrantes no consuman el cupo de las pestañas que sí esperan; por ejemplo, contarlas aparte.
+
+#### R2-02 · Media · Doble clic: dos partidas, dos reservas, y un error falso al aceptar
+
+**Descripción.**
+- `createMatchFromForm` (`app.js:1431-1459`) no desactiva «Invitar» ni «Crear partida con enlace» mientras la petición está en curso.
+- `api()` genera una `Idempotency-Key` **nueva en cada llamada** (`app.js:130`), así que el servidor no puede reconocer el segundo clic como repetición.
+- `acceptInvitation` («Jugar», `app.js:1318-1337`) tampoco se desactiva.
+- En cambio, las acciones de juego y la revancha sí desactivan sus botones (`app.js:1035-1036`, `:1143-1144`), y el panel de admin ya reutiliza la clave por intención (`pendingCreditKeys`, `admin.js`).
+
+**Reproducción** (`test/audit/e2e/client.audit.spec.ts`, Chromium):
+- Doble clic en «Invitar»: **2** `POST /v1/matches`, **2** partidas abiertas y **600** fichas bloqueadas (una entrada son 300).
+- Doble clic en «Crear partida con enlace»: **2** partidas.
+- Doble clic en «Jugar»: **2** `POST …/join`; ya sentado en la mesa, el jugador ve el aviso «La partida ya no acepta un segundo jugador».
+
+**Impacto.** Partidas duplicadas, la entrada reservada dos veces (recuperable abandonando la sobrante o esperando 24 h a que caduque) y, si se invitó por ID, el rival recibe dos invitaciones. En «Jugar», un mensaje de error engañoso. El spec pide un contrato «resistente a doble clic, recargas y mensajes tardíos» (§1.1), y la `Idempotency-Key` del §5 solo sirve si se reutiliza para la misma intención.
+
+**Corrección recomendada.**
+- Desactivar los botones que disparan la petición mientras está en curso, como ya hacen las acciones de juego.
+- Generar la clave por **intención** (al enviar el formulario o pulsar «Jugar») y reutilizarla si el usuario reintenta tras un error de red, como `admin.js`.
+
+#### R2-03 · Baja · Errores no JSON mostrados como error de parseo
+
+**Descripción.** `api()` hace `JSON.parse` del cuerpo antes de mirar `res.ok` (`app.js:139-140`; igual en `admin.js:53-54`). Una página de error HTML de un proxy o balanceador (502, 504, mantenimiento) lanza `SyntaxError`, y su texto llega al usuario.
+
+**Reproducción** (Playwright, con `POST …/actions` interceptado para responder 502 en HTML). Al pulsar «Retirarse», la mesa muestra: «Unexpected token '<', "<html><bod"... is not valid JSON». En el long-poll el mismo error solo queda en consola y se reintenta.
+
+**Corrección recomendada.**
+- Parsear JSON solo si `content-type` incluye `json` (`application/problem+json` incluido).
+- En otro caso, devolver un `ApiError` con un mensaje como «El servidor no responde; reintenta en unos segundos».
+- Tratar 502/503/504 como reintentables.
+
+#### Bajo e informativos (R2-04 … R2-08)
+
+- **R2-04 · Baja · CONFIRMADO · Selección de descarte.** `selectedDiscardIndexes` solo se vacía con una acción enviada con éxito (`app.js:1042`), no al empezar mano. En el flujo normal no se nota: antes del DRAW siguiente el jugador tiene que pasar o igualar, y eso la vacía (control de Playwright). Pero si todas sus acciones intermedias son automáticas (turnos vencidos) o entra all-in con la ciega, sobrevive. Playwright lo reproduce: Ana marca dos cartas en la mano 1 y deja vencer todo hasta el DRAW de la mano 2, que aparece con «2 cartas marcadas para cambiar» y el botón «Cambiar 2». Cartas que nunca eligió se descartarían con un solo clic. Conviene vaciarla cuando deja de ser su DRAW.
+- **R2-05 · «Abandonaste» por inactividad.** `lastHand.winReason` es `FORFEIT` tanto para un abandono como para una desconexión, y la mesa dice «Abandonaste» (`app.js:792-793`), mientras el panel final dice «Por inactividad». Conviene usar `view.finishReason`.
+- **R2-06 · Revancha con la mesa cerrada.** `replaceTable` (`app.js:507-522`) da por hecho que la mesa original sigue abierta. Si se cierra mientras responde `POST …/rematch`, `old.root` es `undefined` y lanza `TypeError`: la revancha queda creada (aparece en «Tus partidas») pero no se abre.
+- **R2-07 · Validación del enlace.** «Crear partida con enlace» es `type="button"` (`index.html:103`) y se salta la validación HTML del formulario. Un valor inválido llega al servidor, que lo rechaza bien, pero el usuario solo ve «Cuerpo de solicitud inválido». Conviene llamar a `form.reportValidity()` antes de enviar.
+- **R2-08 · Huecos del e2e.** No hay pruebas de doble clic, de respuestas no JSON ni de varias pestañas sobre la misma partida (R2-01 a R2-03). Las esperas fijas que quedan (`realtime.spec.ts:39` y `:57`) son la propia medición de «no consultar», así que están justificadas.
+
+### 7.3 Revisado sin defectos
+
+- **XSS.** Todo texto del usuario o del rival se pinta con `textContent` o `setAttribute`; no hay `innerHTML` con datos, ni `insertAdjacentHTML`, `eval` o URLs construidas con datos. El e2e `opponent.spec.ts` (nombre con HTML) pasa.
+- **CSP.** El control de Playwright juega una mano completa (apuestas, draw con descarte, showdown) sin errores de consola ni violaciones de CSP. Los dos `style.setProperty` (`app.js:891`, `:1023`) usan CSSOM, que la CSP no bloquea.
+- **Invitación por enlace:**
+  - el token va en el fragmento (`#`) y se quita de la barra con `history.replaceState`;
+  - la vista previa usa `POST` con el token en el cuerpo y responde 404 sin el token correcto;
+  - la comparación del token es en tiempo constante (`sameToken`);
+  - `linkInvitation` solo llega a quien creó la partida mientras espera rival;
+  - el creador no puede unirse a su propio enlace;
+  - un no invitado recibe siempre 403.
+  
+  Cubierto por `linkInvitations.test.ts` y `e2e/linkInvite.spec.ts`.
+- **Varias mesas.** Cada mesa tiene su long-poll, su generación (un bucle viejo se detiene solo al pausar o cerrar) y su `AbortController`. Con la pestaña oculta no se consulta y al volver hay lectura inmediata. Nunca se pinta una versión más vieja. Ante un 429 se respeta `retryAfterMs`. `e2e/multiTable.spec.ts` y `e2e/realtime.spec.ts` pasan.
+- **Correcciones visibles en el cliente.** El resultado de la mano nombra al ganador, distingue el retiro por tiempo y aparece también en la mano que cierra la partida (AUD-13, `e2e/handResult.spec.ts`). Se muestra cuántas cartas cambió el rival (AUD-08). El token se renueva 5 min antes de vencer (AUD-14). El abono de admin reutiliza la `Idempotency-Key` por intención (AUD-20).
+- **Accesibilidad.** Las hojas modales atrapan el foco y dejan el fondo `inert`; hay región viva para avisos y aviso de 10 s antes del timeout. `e2e/accessibility.spec.ts` pasa.
+
+### 7.4 No verificado
+
+- Navegadores distintos de Chromium (Safari/WebKit y Firefox): el e2e solo usa Chromium (escritorio y Pixel 7).
+- R2-01 en Firefox y Safari con varias pestañas: en Chromium, 4 pestañas del mismo perfil no lo disparan; no se comprobó si otros navegadores serializan igual los GET idénticos.
+- La renovación del token con el equipo suspendido más de 1 h: por diseño, el token vence y hay que volver a entrar.
+
+### 7.5 Estado de las correcciones (2026-10-15)
+
+Todos los hallazgos de la re-auditoría están corregidos. Sus reproducciones pasaron a la suite permanente y se borraron de `test/audit/` (ahí siguen el fuzz y las propiedades del motor). Verificación: `npm run lint` y `npm run typecheck` en verde; `npm test` **207/207**; `npm run test:audit` 5/5; E2E **51 pasan** (escritorio y móvil; los 11 de `robustness.spec.ts` se omiten en móvil a propósito), 6,5 min.
+
+| ID | Resolución | Regresión |
+| --- | --- | --- |
+| R2-01 | **Servidor:** pasado el tope de esperas, si la partida ya cambió se entrega la vista nueva y si no, `429` con `retryAfterMs` de 3 s (`EXCESS_WAIT_RETRY_MS`, `src/api/routes/matches.ts`). **Cliente:** un long-poll que vuelve en menos de 1 s y sin novedades no se repite al instante (`MIN_LONG_POLL_MS`, `Table.pollLoop`). | `test/integration/rateLimits.test.ts` (tope → 429; con novedades → 200; una espera de más no deja sin lecturas a las demás: 1 petición en vez de ~237); `e2e/robustness.spec.ts` (4 navegadores: menos de 30 long-polls en 10 s y los 4 ven la jugada) |
+| R2-02 | `api()` acepta una `idempotencyKey` por intención. «Invitar» y «Crear partida con enlace» se desactivan durante la petición y reusan la clave si se reintenta el mismo formulario; «Jugar» igual, con una clave por partida. La clave solo se descarta ante un 4xx. | `e2e/robustness.spec.ts` (doble clic: 1 `POST`, 300 fichas bloqueadas, 1 partida; 1 unión y ningún aviso de error) |
+| R2-03 | `readJson()` en `app.js` y `admin.js`: solo se parsea un cuerpo con `content-type` JSON; otra cosa da "El servidor no responde ahora mismo. Reintenta en unos segundos.". En `admin.js` la clave de un abono solo se descarta ante un 4xx, para que un reintento tras un 5xx no acredite dos veces. | `e2e/robustness.spec.ts` (502 en HTML) |
+| R2-04 | `render()` vacía la selección de descarte cuando no es tu DRAW o cambia la mano. | `e2e/robustness.spec.ts` (con turnos vencidos y en el flujo normal) |
+| R2-05 | El resultado de la mano usa `finishReason`: "Perdiste por inactividad" / "Ganaste la mano · X se desconectó". | `e2e/robustness.spec.ts` |
+| R2-06 | `requestRematch` comprueba que la mesa siga abierta y, si no, avisa que la revancha está en «Tus partidas»; `replaceTable` ignora una mesa que ya no existe. | `e2e/robustness.spec.ts` |
+| R2-07 | El formulario de partida es `novalidate` y `createMatchFromForm` valida para los dos botones: abre «Reglas» y muestra el aviso del campo inválido sin enviar nada. | `e2e/robustness.spec.ts` |
+| R2-08 | Reproducciones en `npm test` y en el E2E (`e2e/robustness.spec.ts`, solo escritorio: es lógica del cliente), más las pruebas nuevas de R2-05, R2-06 y R2-07 y un control de CSP sobre una mano completa. | — |
+
+README actualizado: comportamiento del tope de long-polls, comandos del cliente (doble clic, `Idempotency-Key` por intención, errores no JSON) y el tamaño real del cliente comprimido (~101 KB → ~29 KB con brotli; decía `app.js` 29 KB → 7 KB).
+
+---
+
+## 8. Re-auditoría del rediseño del cliente (2026-10-15)
+
+**Alcance.** El PR #9 de LuisPortugal05, «Rediseño del cliente web: mesa de casino, cartas de verdad y fichas» (`2c31ab2`, fusionado en `ac89f66`): `public/styles.css` (+1293 líneas), `public/index.html` y `public/app.js`. Se integró en `main` con las correcciones de la sección 7 encima (avance rápido de `main` y reaplicación de los cambios; sin conflictos).
+
+**Qué se revisó.**
+- **Lógica nueva de `app.js`:** cartas con índices en dos esquinas, avatar con la inicial, clic para cerrar el resultado y clases nuevas en los botones.
+- **Marcado nuevo:** el abanico decorativo del login y las placas de los asientos.
+- **CSS:**
+  - recursos externos;
+  - `prefers-reduced-motion` y `prefers-contrast`;
+  - foco visible;
+  - capas y superposiciones.
+- **Capturas y contraste medido** (Playwright, escritorio 1280×720 y Pixel 7): login, lobby, mesa antes del draw, mesa en DRAW, resultado de la mano y hoja de abandono.
+
+**Sin defectos:**
+- todo el texto nuevo se pinta con `textContent`;
+- no carga fuentes, scripts ni imágenes externas: la única textura es un SVG en `data:`, que la CSP permite (`img-src 'self' data:`);
+- la CSP no registra violaciones en una mano completa (control de `e2e/robustness.spec.ts`);
+- las animaciones infinitas se detienen con `prefers-reduced-motion`;
+- no hay desborde horizontal ni en escritorio ni en móvil;
+- todo texto sobre fondo sólido supera 4,5:1 (las cartas y los botones dorados usan gradientes: oscuro sobre marfil u oro, con contraste de sobra);
+- se conservan los IDs, clases y textos que usa el E2E.
+
+### 8.1 Hallazgos
+
+| ID | Severidad | Área | Título | Estado | Ubicación |
+| --- | --- | --- | --- | --- | --- |
+| R3-01 | Baja | Cliente / juego | El resultado de la mano flota 6–9 s sobre la mesa y tapa tus cartas nuevas, también cuando ya te toca actuar; no se cierra con teclado | CONFIRMADO (medido y capturado) · **corregido** | `public/styles.css:2001`, `public/app.js:874` |
+| R3-02 | Info | Accesibilidad | El texto de ejemplo de los campos (`--tertiary`) tenía 3,85:1 de contraste (WCAG 1.4.3 pide 4,5:1) | CONFIRMADO (medido) · **corregido** | `public/styles.css:52` |
+| R3-03 | Info | Cliente | La inicial del avatar cortaba los emojis por la mitad (`charAt(0)` toma una unidad UTF-16) | SOSPECHA (código) · **corregido** | `public/app.js:272` |
+| R3-04 | Info | Diseño | En escritorio de poca altura (1280×720), con tu turno activo, la barra de acciones fija tapa tu placa (tus fichas y tu apuesta); hay que hacer scroll | CONFIRMADO (medido) · pendiente del diseñador | `public/styles.css:1360-1362` |
+
+**R3-01.**
+- **Medición:** a 1280×720, el resultado ocupaba y = 320–565 px, encima de las 5 cartas nuevas, que empiezan en y = 474 px; en el móvil las tapaba por completo. Quien actúa primero en la mano siguiente decidía sin ver sus cartas durante hasta 9 s (los turnos pueden ser de 15 s), salvo tocando el aviso para cerrarlo.
+- **Corrección:** si te toca actuar, el resultado se muestra en una sola línea, sin las manos reveladas, y no tapa tus cartas (y = 405–451 px frente a 474 px). Escape lo cierra. Mientras esperas se mantiene el diseño completo, con las dos manos.
+- **Regresión:** `e2e/robustness.spec.ts`, prueba «R3-01».
+
+**R3-02.**
+- **Corrección:** `--tertiary` pasa de `#6d7269` a `#80857b` (≈ 5:1). Solo lo usan el texto de ejemplo de los campos y el borde de la flecha de «Reglas».
+- **Regresión:** «R3-02», que mide el contraste real del texto de ejemplo.
+
+**R3-03.**
+- **Corrección:** la inicial se toma por puntos de código.
+- **Regresión:** «R3-03», con un jugador cuyo nombre empieza con «🂡».
+
+**R3-04.**
+- **Medición:** la barra de acciones es `position: sticky; bottom: 0` y mide ~150 px con el control de subida. A 1280×720 ocupa y = 571–720 px y tu placa queda en y = 582–630 px, así que se ve solo al hacer scroll. Las cartas quedan libres por 1 px. En el móvil (Pixel 7) la placa queda visible.
+- **Recomendación** (se deja al diseñador porque cambia la maquetación): con `@media (max-height: 760px)`, reducir la altura del paño o poner la placa al lado de las cartas en lugar de debajo.
+
+### 8.2 Verificación
+
+- `npm run lint` y `npm run typecheck`: en verde.
+- `npm test`: 207/207.
+- `npm run test:audit`: 5/5.
+- E2E: **54 pasan** y 14 se omiten (los de `robustness.spec.ts` en móvil, a propósito); 8,2 min, código de salida 0.
+
+En una corrida intermedia, `linkInvite.spec.ts` se quedó congelado ~8 min y agotó su tiempo. Repetido aislado pasó 3 de 3 en ~9 s cada vez, así que no se atribuye al rediseño (probable suspensión del equipo durante la corrida).
