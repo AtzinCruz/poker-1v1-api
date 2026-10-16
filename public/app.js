@@ -217,16 +217,36 @@ function formatCard(code, faceDown = false) {
     return tile;
   }
   const { suit, label } = parseCard(code);
+  const symbol = SUIT_SYMBOL[suit] || suit;
   if (suit === "H" || suit === "D") tile.classList.add("red");
+  if (RANK_NAME[label] && label !== "A") tile.classList.add("court");
   tile.setAttribute("role", "img");
   tile.setAttribute("aria-label", cardName(code));
-  for (const text of [label, SUIT_SYMBOL[suit] || suit]) {
-    const span = document.createElement("span");
-    span.textContent = text;
-    span.setAttribute("aria-hidden", "true");
-    tile.appendChild(span);
+  // Índices en dos esquinas (el de abajo, girado) y el palo grande al centro, como una carta de verdad.
+  for (const corner of ["corner-tl", "corner-br"]) {
+    const index = document.createElement("span");
+    index.className = `card-corner ${corner}`;
+    index.setAttribute("aria-hidden", "true");
+    const rank = document.createElement("span");
+    rank.className = "card-rank";
+    rank.textContent = label;
+    const pip = document.createElement("span");
+    pip.className = "card-suit";
+    pip.textContent = symbol;
+    index.append(rank, pip);
+    tile.appendChild(index);
   }
+  const center = document.createElement("span");
+  center.className = "card-center";
+  center.setAttribute("aria-hidden", "true");
+  center.textContent = RANK_NAME[label] && label !== "A" ? label : symbol;
+  tile.appendChild(center);
   return tile;
+}
+
+/** Inicial del nombre para el avatar del asiento. */
+function initial(name) {
+  return (name || "?").trim().charAt(0).toUpperCase() || "?";
 }
 
 const fmt = (n) => Number(n).toLocaleString("es");
@@ -595,6 +615,8 @@ class Table {
       openSheet("resign-popup", "btn-resign-cancel");
     });
     this.q("btn-close-table").addEventListener("click", () => closeTable(this.matchId));
+    // El resultado flota sobre el paño: un toque lo quita antes de tiempo para ver la mano nueva.
+    this.q("hand-result").addEventListener("click", () => this.q("hand-result").classList.add("hidden"));
   }
 
   /** Elemento de esta mesa con la clase dada. */
@@ -713,6 +735,8 @@ class Table {
     this.setBetChip("you", view.you.contribution);
 
     this.q("opponent-name").textContent = opponentName;
+    this.q("opponent-avatar").textContent = view.opponent?.displayName ? initial(view.opponent.displayName) : "?";
+    this.q("you-avatar").textContent = initial(session.player.displayName);
     this.q("opponent-panel").setAttribute("aria-label", opponentName);
     this.q("result-opponent-name").textContent = opponentName;
 
@@ -948,14 +972,14 @@ class Table {
     }
 
     // Orden fijo, de menor a mayor compromiso: retirarse · pasar/igualar · all-in · subir.
-    if (byType.FOLD) panel.appendChild(makeButton("Retirarse", "btn-gray", () => this.submitAction({ type: "FOLD" })));
-    if (byType.CHECK) panel.appendChild(makeButton("Pasar", "btn-tinted", () => this.submitAction({ type: "BET", amount: 0 })));
+    if (byType.FOLD) panel.appendChild(makeButton("Retirarse", "btn-fold", () => this.submitAction({ type: "FOLD" })));
+    if (byType.CHECK) panel.appendChild(makeButton("Pasar", "btn-call", () => this.submitAction({ type: "BET", amount: 0 })));
     if (byType.CALL) {
       panel.appendChild(
-        makeButton(`Igualar ${fmt(byType.CALL.amount)}`, "btn-tinted", () => this.submitAction({ type: "BET", amount: byType.CALL.amount })),
+        makeButton(`Igualar ${fmt(byType.CALL.amount)}`, "btn-call", () => this.submitAction({ type: "BET", amount: byType.CALL.amount })),
       );
     }
-    if (byType.ALL_IN) panel.appendChild(makeButton("All-in", "btn-gray", () => this.submitAction({ type: "ALL_IN" })));
+    if (byType.ALL_IN) panel.appendChild(makeButton("All-in", "btn-allin", () => this.submitAction({ type: "ALL_IN" })));
     if (byType.RAISE) panel.appendChild(this.makeRaiseControl(byType.RAISE.min, byType.RAISE.max));
   }
 
@@ -1013,7 +1037,7 @@ class Table {
     const value = document.createElement("span");
     value.className = "raise-value";
 
-    const btn = makeButton("", "btn-primary", () => this.submitAction({ type: "BET", amount: Number(range.value) }));
+    const btn = makeButton("", "btn-raise", () => this.submitAction({ type: "BET", amount: Number(range.value) }));
 
     const sync = () => {
       const amount = Number(range.value);
